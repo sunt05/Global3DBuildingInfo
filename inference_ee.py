@@ -4,10 +4,12 @@ from typing import Tuple
 import datetime
 import json
 import os
+import time
 import ee
 import matplotlib.pyplot as plt
 
 from utils import *
+from DL_model import *
 
 
 REGION = "us-central1"
@@ -38,7 +40,7 @@ FEATURES = ["VV_p50", "VH_p50", "B4", "B3", "B2", "elevation"]
 #FEATURES = ["VV_p50", "VH_p50", "B4", "B3", "B2"]
 
 
-def export_satData_GEE(lon_min: Tuple[int, float], lat_min: Tuple[int, float], lon_max: Tuple[int, float], lat_max: Tuple[int, float], year: int, file_prefix: str, target_resolution: int, padding=0.04, patch_size_ratio=1, s2_cloud_prob_threshold=20, s2_cloud_prob_max=80):
+def export_satData_GEE(lon_min: Tuple[int, float], lat_min: Tuple[int, float], lon_max: Tuple[int, float], lat_max: Tuple[int, float], year: int, target_resolution: int, file_prefix=None, padding=0.04, patch_size_ratio=1, s2_cloud_prob_threshold=20, s2_cloud_prob_max=80):
     """Export satellite images and data to Google Cloud Storage (GCS).
 
     Parameters
@@ -67,13 +69,13 @@ def export_satData_GEE(lon_min: Tuple[int, float], lat_min: Tuple[int, float], l
 
     if any([not isinstance(lon_min, int), not isinstance(lon_max, int), not isinstance(lat_min, int), not isinstance(lat_max, int)]):
         lon_min_f, lon_min_i = math.modf(lon_min)
-        lon_min_str = "%d.%d" % (lon_min_i, round(lon_min_f * 1000))
+        lon_min_str = "%d.%d" % (lon_min_i, round(lon_min_f * 100))
         lat_min_f, lat_min_i = math.modf(lat_min)
-        lat_min_str = "%d.%d" % (lat_min_i, round(lat_min_f * 1000))
+        lat_min_str = "%d.%d" % (lat_min_i, round(lat_min_f * 100))
         lon_max_f, lon_max_i = math.modf(lon_max)
-        lon_max_str = "%d.%d" % (lon_max_i, round(lon_max_f * 1000))
+        lon_max_str = "%d.%d" % (lon_max_i, round(lon_max_f * 100))
         lat_max_f, lat_max_i = math.modf(lat_max)
-        lat_max_str = "%d.%d" % (lat_max_i, round(lat_max_f * 1000))
+        lat_max_str = "%d.%d" % (lat_max_i, round(lat_max_f * 100))
         file_suffix = "_".join([lon_min_str, lon_max_str, lat_min_str, lat_max_str])
         int_flag = False
     else:
@@ -101,10 +103,15 @@ def export_satData_GEE(lon_min: Tuple[int, float], lat_min: Tuple[int, float], l
     xy_coords = np.concatenate([x.flatten().reshape(-1, 1), y.flatten().reshape(-1, 1)], axis=1)
     target_pt = ee.FeatureCollection([ee.Geometry.Point(cr[0], cr[1]) for cr in xy_coords])
 
+    # ------set the name of the exported TFRecords file
+    if file_prefix is not None:
+        records_name = file_prefix + "_" + file_suffix + "_" + "H{0}".format(len(yloc)) + "W{0}".format(len(xloc))
+    else:
+        records_name = "_" + file_suffix + "_" + "H{0}".format(len(yloc)) + "W{0}".format(len(xloc))
+
     # ------filter the NASADEM data
     DEM_dta = ee.Image("NASA/NASADEM_HGT/001").select(["elevation"]).float()
     DEM_dta = DEM_dta.clip(target_bd)
-    DEM_ds_name = file_prefix + "_" + file_suffix
     
     # ------filter the Sentinel-1 data
     s1_ds = ee.ImageCollection("COPERNICUS/S1_GRD")
@@ -199,10 +206,9 @@ def export_satData_GEE(lon_min: Tuple[int, float], lat_min: Tuple[int, float], l
     sentinel_kernel = ee.Kernel.fixed(sentinel_psize, sentinel_psize, sentinel_value_default)
 
     sentinel_patched = sentinel_image.neighborhoodToArray(sentinel_kernel)
-    target_pt = sentinel_patched.sampleRegions(collection=target_pt, scale=10, geometries=True)
-
+    # target_pt = sentinel_patched.sampleRegions(collection=target_pt, scale=10, geometries=True)
+    '''
     # ---------generate the neighborhood patches from DEM data
-    
     dem_psize = int(sentinel_psize * patch_size_ratio)
     dem_value_default = ee.List.repeat(-1e4, dem_psize)
     dem_value_default = ee.List.repeat(dem_value_default, dem_psize)
@@ -211,51 +217,60 @@ def export_satData_GEE(lon_min: Tuple[int, float], lat_min: Tuple[int, float], l
     dem_patched = DEM_dta.neighborhoodToArray(dem_kernel)
     target_pt = dem_patched.sampleRegions(collection=target_pt, scale=30)
     '''
-    '''
-
-    '''
+    
     # ---------export center points for sampling patches
+    
     shp_task_config = {
         "collection": target_pt,
-        "description": DEM_ds_name,
+        "description": records_name,
         "folder": "Global_export",
         "fileFormat": "SHP",
     }
 
-    task = ee.batch.Export.table.toDrive(**shp_task_config)
-    task.start()
+    shp_task = ee.batch.Export.table.toDrive(**shp_task_config)
+    shp_task.start()
     '''
-
+    '''
+    
     '''
     # ---------export the image where patches are sampled
     test_image = ee.Image.cat([s1_img, s2_img_cloudFree, DEM_dta]).float()
-    task_config = {
+    img_task_config = {
         "image": test_image,
-        "description": DEM_ds_name,
+        "description": records_name,
         "folder": "Global_export",
         "scale": 10,
         "maxPixels": 1e13,
         "crs": "EPSG:4326"
     }
 
-    task = ee.batch.Export.image.toDrive(**task_config)
-    task.start()
+    img_task = ee.batch.Export.image.toDrive(**img_task_config)
+    img_task.start()
     '''
     
+    '''
     # ---------export the patched dataset into the format of TFRecord
-    shp_task_config = {
+    records_task_config = {
         "collection": target_pt,
-        "description": DEM_ds_name,
+        "description": records_name,
         "folder": "Global_export",
         "fileFormat": "TFRecord",
     }
 
-    task = ee.batch.Export.table.toDrive(**shp_task_config)
-    task.start()
-    '''
-    '''
+    records_task = ee.batch.Export.table.toDrive(**records_task_config)
+    records_task.start()
     
 
+    while records_task.active():
+        time.sleep(10)
+
+    if records_task.status()["state"] != "COMPLETED":
+        print("[Error] TFRecords fails to be exported at [{0}, {1}, {2}, {3}]".format(lon_min, lon_max, lat_min, lat_max))
+    else:
+        print("[Success] TFRecords is exported at [{0}, {1}, {2}, {3}]".format(lon_min, lon_max, lat_min, lat_max))
+    '''
+    
+    
 def parseSatTFRecord(example_proto: tf.train.Example, target_resolution: int, patch_size_ratio=1):
     kernelSize = int(target_resolution / 10.0)
     overlapSize = overlapSize_ref[target_resolution]
@@ -289,12 +304,36 @@ def createInferDataset(imagePathList: list, target_resolution: int):
     imgDataset = imgDataset.map(toTupleImage).batch(1)
 
     dta = list(imgDataset.as_numpy_iterator())
-    print(dta[0])
+    print(dta[0][0][0, :, :, 0])
     print(dta[0][0].shape)
     print(dta[0][1].shape)
-    plt.imshow(dta[0][1][0, :, :, 0], vmin=50, vmax=70, cmap="turbo")
+    plt.imshow(dta[0][0][0, :, :, 0], vmin=-11, vmax=-5, cmap="turbo")
     plt.show()
 
 
-#export_satData_GEE(lon_min=0, lat_min=51.2, lon_max=0.0027, lat_max=51.2027, year=2020, file_prefix="_", target_resolution=100, padding=0.01, s2_cloud_prob_threshold=20, s2_cloud_prob_max=80)
-createInferDataset(["testSample/__0.0_0.3_51.200_51.203.tfrecord.gz"], target_resolution=100)
+def predImage(imagePathList: list, trained_record: str, target_resolution: int):
+    # ------model configuration
+    psize = kernel_size_ref[target_resolution]
+    if psize == 15:
+        in_plane = 64
+        num_block = 2
+    elif psize == 30:
+        in_plane = 64
+        num_block = 1
+    elif psize == 60:
+        in_plane = 64
+        num_block = 1
+    else:
+        in_plane = 64
+        num_block = 1
+
+    cuda_used = (cuda_used and torch.cuda.is_available())
+
+    m = model_SEResNetTF(in_plane=in_plane, input_channels=6, input_size=psize, num_block=num_block)
+    m.predict()
+
+
+
+if __name__ == "__main__":
+    #export_satData_GEE(lon_min=0, lat_min=51.2, lon_max=0.09, lat_max=51.29, year=2020, file_prefix="_", target_resolution=100, padding=0.01, s2_cloud_prob_threshold=20, s2_cloud_prob_max=80)
+    createInferDataset(["testSample/__0.0_0.9_51.20_51.29_H100W100.tfrecord.gz"], target_resolution=100)
