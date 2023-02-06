@@ -337,7 +337,9 @@ class BuildingNet_aux_tf(tf.keras.Model):
         else:
             raise NotImplementedError
 
-    def call(self, x, aux, training=None):
+    def call(self, dta_input, training=None):
+        x  = dta_input[:, :, :, :-1]
+        aux = tf.expand_dims(dta_input[:, :, :, -1], axis=-1)
         x = self.features(x, training=training)
         x = self.avgpool(x)
         x = self.flatten(x)
@@ -493,14 +495,15 @@ class BuildingNetMTL_aux_tf(tf.keras.Model):
         self.fc_height = layers.Dense(units=int(num_plane / 2), name="fc_height")
         self.bn_out_height = layers.BatchNormalization(momentum=0.1, epsilon=1e-5, name="bn_out_height")
         self.fc_out_height = layers.Dense(units=1, name="fc_out_height")
-        self.activation_height = tf.keras.activations.relu()
 
         self.fc_footprint = layers.Dense(units=int(num_plane / 2), name="fc_footprint")
         self.bn_out_footprint = layers.BatchNormalization(momentum=0.1, epsilon=1e-5, name="bn_out_footprint")
         self.fc_out_footprint = layers.Dense(units=1, name="fc_out_footprint")
-        self.activation_footprint = tf.keras.activations.sigmoid()
         
-    def call(self, x, aux, training=None):
+    def call(self, dta_input, training=None):
+        x  = dta_input[:, :, :, :-1]
+        aux = tf.expand_dims(dta_input[:, :, :, -1], axis=-1)
+
         x = self.features(x, training=training)
         x = self.avgpool(x)
         x = self.flatten(x)
@@ -515,13 +518,13 @@ class BuildingNetMTL_aux_tf(tf.keras.Model):
         feature_fc1_footprint = self.bn_out_footprint(feature_fc1_footprint)
         feature_fc1_footprint = self.relu(feature_fc1_footprint)
         footprint = self.fc_out_footprint(feature_fc1_footprint)
-        footprint = self.activation_footprint(footprint)
+        footprint = tf.keras.activations.sigmoid(footprint)
 
         feature_fc1_height = self.fc_height(feature_shared)
         feature_fc1_height = self.bn_out_height(feature_fc1_height)
         feature_fc1_height = self.relu(feature_fc1_height)
         height = self.fc_out_height(feature_fc1_height)
-        height = self.activation_height(height)
+        height = tf.keras.activations.relu(height)
 
         if not self.log_scale:
             height = self.relu(height)
@@ -631,7 +634,8 @@ def model_SEResNetAuxTF(input_channels: int, input_size: int, aux_input_size: in
 
     if "trained_record" in kwargs.keys():
         trained_record = kwargs["trained_record"]
-        model.load_pretrained_model(trained_record)
+        if trained_record is not None:
+            model.load_pretrained_model(trained_record)
    
     total_num = sum([count_params(w) for w in model.trainable_weights]) + sum([count_params(w) for w in model.non_trainable_weights])
     trainable_num = sum([count_params(w) for w in model.trainable_weights])
@@ -646,7 +650,8 @@ def model_SEResNetMTLAuxTF(input_channels: int, input_size: int, aux_input_size:
 
     if "trained_record" in kwargs.keys():
         trained_record = kwargs["trained_record"]
-        model.load_pretrained_model(trained_record)
+        if trained_record is not None:
+            model.load_pretrained_model(trained_record)
    
     total_num = sum([count_params(w) for w in model.trainable_weights]) + sum([count_params(w) for w in model.non_trainable_weights])
     trainable_num = sum([count_params(w) for w in model.trainable_weights])
@@ -662,7 +667,7 @@ if __name__ == "__main__":
     '''
 
     # m = model_ResNetTF(in_plane=64, input_channels=6, input_size=30, num_block=4)
-    m = model_SEResNetAuxTF(in_plane=64, input_channels=6, input_size=20, aux_input_size=20, num_block=4)
+    m = model_SEResNetAuxTF(in_plane=64, input_channels=6, input_size=20, aux_input_size=20, num_block=1)
 
     '''
     # ---check the trainable_variables in Tensorflow's implementation

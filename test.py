@@ -1,37 +1,17 @@
-from typing import Union, List, Dict
+import tensorflow as tf
+from tensorflow.python.tools import saved_model_utils
+from typing import Tuple
 import datetime
+import json
 import re
+import os
 import subprocess
 import time
 import ee
 import matplotlib.pyplot as plt
-import tensorflow as tf
-import rasterio
-import rasterio.transform as rtransform
 
 from utils import *
 from DL_model import *
-
-
-REGION = "us-central1"
-
-# ---Earth Engine username
-PROJECT = "3DBuildingInfoMapping"
-MODEL = "SHAFTS_STL"
-#VERSION = "v202302"
-#AiPlatform_RUNTIME_VERSION = "2.10"
-#PYTHON_VERSION = "3.9"
-
-# ---Cloud Storage bucket into which prediction datset will be written
-BUCKET = "lyy_bucket-1"
-DATA_FOLDER = "dataset_tmp"
-STL_MODEL_FOLDER = "STL"
-MTL_MODEL_FOLDER = "MTL"
-
-# ---Directory specification
-# MODEL_DIR = "gs://" + OUTPUT_BUCKET + "/{0}".format(MODEL)
-# ------put the EEified model next to the trained model directory
-#EEIFIED_DIR = "gs://" + OUTPUT_BUCKET + "/eeified_{0}".format(MODEL)
 
 
 kernel_size_ref = {100: 20, 250: 40, 500: 80, 1000: 160}
@@ -42,7 +22,7 @@ FEATURES = ["VV_p50", "VH_p50", "B4", "B3", "B2", "elevation"]
 #FEATURES = ["VV_p50", "VH_p50", "B4", "B3", "B2"]
 
 
-def export_satData_GEE(lon_min: Union[int, float], lat_min: Union[int, float], lon_max: Union[int, float], lat_max: Union[int, float], year: int, target_resolution: int, dst_dir: str, destination="CloudStorage", file_prefix=None, padding=0.04, patch_size_ratio=1, s2_cloud_prob_threshold=20, s2_cloud_prob_max=80):
+def export_satData_GEE(lon_min: Tuple[int, float], lat_min: Tuple[int, float], lon_max: Tuple[int, float], lat_max: Tuple[int, float], year: int, target_resolution: int, file_prefix=None, padding=0.04, patch_size_ratio=1, s2_cloud_prob_threshold=20, s2_cloud_prob_max=80):
     """Export satellite images and data to Google Cloud Storage (GCS).
 
     Parameters
@@ -79,8 +59,10 @@ def export_satData_GEE(lon_min: Union[int, float], lat_min: Union[int, float], l
         lat_max_f, lat_max_i = math.modf(lat_max)
         lat_max_str = "%d.%d" % (lat_max_i, round(lat_max_f * 100))
         file_suffix = "_".join([lon_min_str, lon_max_str, lat_min_str, lat_max_str])
+        int_flag = False
     else:
         file_suffix = "_".join([str(lon_min), str(lon_max_str), str(lat_min_str), str(lat_max_str)])
+        int_flag = True
 
     point_left_top = [lon_min, lat_max]
     point_right_top = [lon_max, lat_max]
@@ -206,8 +188,8 @@ def export_satData_GEE(lon_min: Union[int, float], lat_min: Union[int, float], l
     sentinel_kernel = ee.Kernel.fixed(sentinel_psize, sentinel_psize, sentinel_value_default)
 
     sentinel_patched = sentinel_image.neighborhoodToArray(sentinel_kernel)
-    target_pt = sentinel_patched.sampleRegions(collection=target_pt, scale=10, geometries=True)
-    
+    # target_pt = sentinel_patched.sampleRegions(collection=target_pt, scale=10, geometries=True)
+    '''
     # ---------generate the neighborhood patches from DEM data
     dem_psize = int(sentinel_psize * patch_size_ratio)
     dem_value_default = ee.List.repeat(-1e4, dem_psize)
@@ -216,18 +198,20 @@ def export_satData_GEE(lon_min: Union[int, float], lat_min: Union[int, float], l
     
     dem_patched = DEM_dta.neighborhoodToArray(dem_kernel)
     target_pt = dem_patched.sampleRegions(collection=target_pt, scale=30)
+    '''
     
     # ---------export center points for sampling patches
-    '''
+    
     shp_task_config = {
         "collection": target_pt,
         "description": records_name,
-        "folder": dst_dir,
+        "folder": "Global_export",
         "fileFormat": "SHP",
     }
 
     shp_task = ee.batch.Export.table.toDrive(**shp_task_config)
     shp_task.start()
+    '''
     '''
     
     '''
@@ -236,7 +220,7 @@ def export_satData_GEE(lon_min: Union[int, float], lat_min: Union[int, float], l
     img_task_config = {
         "image": test_image,
         "description": records_name,
-        "folder": dst_dir,
+        "folder": "Global_export",
         "scale": 10,
         "maxPixels": 1e13,
         "crs": "EPSG:4326"
@@ -246,27 +230,18 @@ def export_satData_GEE(lon_min: Union[int, float], lat_min: Union[int, float], l
     img_task.start()
     '''
     
+    '''
     # ---------export the patched dataset into the format of TFRecord
-    if destination == "Drive":
-        records_task_config = {
-            "collection": target_pt,
-            "description": records_name,
-            "folder": dst_dir,
-            "fileFormat": "TFRecord",
-        }
-        records_task = ee.batch.Export.table.toDrive(**records_task_config)
-    elif destination == "CloudStorage":
-        records_task_config = {
-            "collection": target_pt,
-            "description": records_name,
-            "bucket": BUCKET,
-            "fileNamePrefix": DATA_FOLDER + "/" + records_name,
-            "fileFormat": "TFRecord",
-        }
-        records_task = ee.batch.Export.table.toCloudStorage(**records_task_config)
-        records_task.start()
-    else:
-        raise NotImplementedError("Unknown destination: {0}. Supported destination: ['Drive', 'CloudStorage']".format(destination))
+    records_task_config = {
+        "collection": target_pt,
+        "description": records_name,
+        "folder": "Global_export",
+        "fileFormat": "TFRecord",
+    }
+
+    records_task = ee.batch.Export.table.toDrive(**records_task_config)
+    records_task.start()
+    
 
     while records_task.active():
         time.sleep(10)
@@ -275,6 +250,7 @@ def export_satData_GEE(lon_min: Union[int, float], lat_min: Union[int, float], l
         print("[Error] TFRecords fails to be exported at [{0}, {1}, {2}, {3}]".format(lon_min, lon_max, lat_min, lat_max))
     else:
         print("[Success] TFRecords is exported at [{0}, {1}, {2}, {3}]".format(lon_min, lon_max, lat_min, lat_max))
+    '''
     
     
 def parseSatTFRecord(example_proto: tf.train.Example, target_resolution: int, patch_size_ratio=1):
@@ -291,7 +267,7 @@ def parseSatTFRecord(example_proto: tf.train.Example, target_resolution: int, pa
     return featParsed_ref
 
 
-def toTupleImage(feature_dict: Dict[str, tf.Tensor]):
+def toTupleImage(feature_dict: dict):
     featList = [feature_dict.get(k) for k in FEATURES]
     feat_stacked = tf.stack(featList, axis=0)
     # ------convert CHW to HWC
@@ -304,8 +280,8 @@ def toTupleImage(feature_dict: Dict[str, tf.Tensor]):
     return feat
 
 
-def createInferDataset(recordPathList: List[str], target_resolution: int, batch_size=1) -> tf.data.TFRecordDataset:
-    imgDataset = tf.data.TFRecordDataset(recordPathList, compression_type="GZIP")
+def createInferDataset(imagePathList: list, target_resolution: int, batch_size=1) -> tf.data.TFRecordDataset:
+    imgDataset = tf.data.TFRecordDataset(imagePathList, compression_type="GZIP")
     imgDataset = imgDataset.map(lambda x: parseSatTFRecord(x, target_resolution), num_parallel_calls=1)
 
     imgDataset = imgDataset.map(toTupleImage).batch(batch_size)
@@ -319,86 +295,45 @@ def createInferDataset(recordPathList: List[str], target_resolution: int, batch_
 
     return imgDataset
     
+kernel_size_ref = {100: 20, 250: 40, 500: 80, 1000: 160}
+overlapSize_ref = {100: 10, 250: 15, 500: 30, 1000: 60}
+degree_ref = {100: 0.0009, 250: 0.00225, 500: 0.0045, 1000: 0.009}
 
-def GBuildingMap(lon_min: Union[int, float], lat_min: Union[int, float], lon_max: Union[int, float], lat_max: Union[int, float], year: int, pretrained_model: Union[Dict[str, str], str], target_resolution: int, file_prefix=None, padding=0.02, patch_size_ratio=1, s2_cloud_prob_threshold=20, s2_cloud_prob_max=80, MTL=True, removed=True):
-    # ------export patched datasets from Google Earth Engine (GEE) to Google Cloud Storage (GCS)
-    export_satData_GEE(lon_min=lon_min, lat_min=lat_min, lat_max=lat_max, lon_max=lon_max, year=year, target_resolution=target_resolution,
-                            file_prefix=file_prefix, padding=padding, patch_size_ratio=patch_size_ratio,
-                            s2_cloud_prob_threshold=s2_cloud_prob_threshold, s2_cloud_prob_max=s2_cloud_prob_max)
-    
-    # ------prepare the TFRecords dataset on GCS
-    ds_foloder = "'gs://{0}/{1}".format(BUCKET, DATA_FOLDER)
-    record_bytes = subprocess.Popen("gsutil ls {0}".format(ds_foloder), stdout=subprocess.PIPE).stdout.read()
-    record_list = [f for f in record_bytes.decode().split("\n")[:-1] if f.endswith(".tfrecord.gz")]
-    
-    img_ds = createInferDataset(record_list, target_resolution)
+# ------model configuration
+target_resolution = 100
+psize = kernel_size_ref[target_resolution]
+if psize == 15:
+    in_plane = 64
+    num_block = 2
+elif psize == 30:
+    in_plane = 64
+    num_block = 1
+elif psize == 60:
+    in_plane = 64
+    num_block = 1
+else:
+    in_plane = 64
+    num_block = 1
 
-    # ---------determine the information of dimensions of the dataset
-    h, w = re.findall(pattern=r"H(\d+)W(\d+)", string=record_list[0])[0]
-    h = int(h)
-    w = int(w)
-    
-    # ------model configuration
-    psize = kernel_size_ref[target_resolution]
-    if psize == 15:
-        in_plane = 64
-        num_block = 2
-    elif psize == 30:
-        in_plane = 64
-        num_block = 1
-    elif psize == 60:
-        in_plane = 64
-        num_block = 1
-    else:
-        in_plane = 64
-        num_block = 1
+activation = "relu"
 
-    cuda_used = (cuda_used and torch.cuda.is_available())
+cuda_used = torch.cuda.is_available()
 
-    if MTL:
-        # ------prepare the Tensorflow-based MTL models
-        m = model_SEResNetMTLAuxTF(input_channels=6, input_size=psize, aux_input_size=psize, in_plane=in_plane, num_block=num_block, num_aux=1,
-                                        log_scale=False, cuda_used=cuda_used, trained_record=pretrained_model)
-        footprint_dta, height_dta = m.predict(x=img_ds, verbose=1)
-    else:
-        # ------prepare the Tensorflow-based STL models
-        m_footprint = model_SEResNetAuxTF(input_channels=6, input_size=psize, aux_input_size=psize, in_plane=in_plane, num_block=num_block, num_aux=1,
-                                            log_scale=False, activation="sigmoid", cuda_used=cuda_used, trained_record=pretrained_model["footprint"])
-        footprint_dta = m_footprint.predict(x=img_ds, verbose=1)
+# ------prepare the TFRecords dataset
+record_list = ["testSample/__0.0_0.9_51.20_51.29_H100W100.tfrecord.gz"]
+# ---------determine the information of dimensions of the dataset
+h, w = re.findall(pattern=r"H(\d+)W(\d+)", string=record_list[0])[0]
+h = int(h)
+w = int(w)
 
-        res = np.reshape(res, newshape=(h, w))
-        m_height = model_SEResNetAuxTF(input_channels=6, input_size=psize, aux_input_size=psize, in_plane=in_plane, num_block=num_block, num_aux=1,
-                                            log_scale=False, activation="relu", cuda_used=cuda_used, trained_record=pretrained_model["height"])
-        height_dta = m_height.predict(x=img_ds, verbose=1)
-    
-    footprint_dta = np.reshape(footprint_dta, newshape=(h, w))
-    height_dta = np.reshape(height_dta, newshape=(h, w))
+img_ds = createInferDataset(imagePathList=record_list, target_resolution=target_resolution)
 
-    # ------export predicted images to Google Cloud Storage
-    if any([not isinstance(lon_min, int), not isinstance(lon_max, int), not isinstance(lat_min, int), not isinstance(lat_max, int)]):
-        lon_min_f, lon_min_i = math.modf(lon_min)
-        lon_min_str = "%d.%d" % (lon_min_i, round(lon_min_f * 100))
-        lat_min_f, lat_min_i = math.modf(lat_min)
-        lat_min_str = "%d.%d" % (lat_min_i, round(lat_min_f * 100))
-        lon_max_f, lon_max_i = math.modf(lon_max)
-        lon_max_str = "%d.%d" % (lon_max_i, round(lon_max_f * 100))
-        lat_max_f, lat_max_i = math.modf(lat_max)
-        lat_max_str = "%d.%d" % (lat_max_i, round(lat_max_f * 100))
-        file_suffix = "_".join([lon_min_str, lon_max_str, lat_min_str, lat_max_str])
-    else:
-        file_suffix = "_".join([str(lon_min), str(lon_max_str), str(lat_min_str), str(lat_max_str)])
+# ------prepare the Tensorflow-based models
+m = model_SEResNetMTLAuxTF(input_channels=6, input_size=psize, aux_input_size=psize, in_plane=in_plane, num_block=num_block, num_aux=1,
+                                log_scale=False, cuda_used=cuda_used)
+dta = m.predict(x=img_ds, verbose=1)
+print(dta[0].shape)
+res_footprint, res_height = dta
 
-    output_geo_trans = rtransform.Affine(target_resolution, 0.0, lon_min, 0.0, -target_resolution, lat_max)
-
-    footprint_name = "BF" + "_" + file_suffix
-    with rasterio.open(footprint_name, "w+", width=w, height=h, count=1, crs="EPSG:4326", transform=output_geo_trans, dtype="float32") as out:
-        out.write_band(1, footprint_dta)
-    
-    height_name = "BF" + "_" + file_suffix
-    with rasterio.open(height_name, "w+", width=w, height=h, count=1, crs="EPSG:4326", transform=output_geo_trans, dtype="float32") as out:
-        out.write_band(1, height_dta)
-        
-
-if __name__ == "__main__":
-    #export_satData_GEE(lon_min=0, lat_min=51.2, lon_max=0.09, lat_max=51.29, year=2020, file_prefix="_", target_resolution=100, padding=0.01, s2_cloud_prob_threshold=20, s2_cloud_prob_max=80)
-    createInferDataset(["testSample/__0.0_0.9_51.20_51.29_H100W100.tfrecord.gz"], target_resolution=100)
+res_footprint = np.reshape(res_footprint, newshape=(h, w))
+res_height = np.reshape(res_height, newshape=(h, w))
