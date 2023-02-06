@@ -7,6 +7,10 @@ from keras import layers
 from keras.utils.layer_utils import count_params
 
 
+kernel_size_ref = {100: 20, 250: 40, 500: 80, 1000: 160}
+overlapSize_ref = {100: 10, 250: 15, 500: 30, 1000: 60}
+degree_ref = {100: 0.0009, 250: 0.00225, 500: 0.0045, 1000: 0.009}
+
 # ************************* Utility *************************
 def get_state_dict_structure(torch_state_dict):
     para_structure = {}
@@ -535,7 +539,7 @@ class BuildingNetMTL_aux_tf(tf.keras.Model):
         for l in self.layers:
             print([tensor.shape for tensor in l.get_weights()])
 
-    def load_pretrained_model(self, trained_record):
+    def load_pretrained_model(self, trained_record, mode="torch"):
         torch_state_dict = torch.load(trained_record, map_location=torch.device('cpu'))["state_dict"]
         for var in ["height", "footprint"]:
             # ------initialize fc layer
@@ -627,15 +631,37 @@ class BuildingNetMTL_aux_tf(tf.keras.Model):
                                 base_fc.set_weights([weights.transpose((1, 0))])
 
 
-def model_SEResNetAuxTF(input_channels: int, input_size: int, aux_input_size: int, in_plane: int, num_block: int, num_aux=1, log_scale=False, activation="relu", cuda_used=True, **kwargs) -> BuildingNet_aux_tf:
-    model = BuildingNet_aux_tf(input_channels=input_channels, input_size=input_size, aux_input_size=aux_input_size,
-                                in_plane=in_plane, num_aux=num_aux, num_block=num_block, log_scale=log_scale, activation=activation, cuda_used=cuda_used)
-    model.build(input_shape=(None, input_size, input_size, input_channels))
+def model_SEResNetAuxTF(target_resolution: int, log_scale=False, activation="relu", cuda_used=True, model_resaved=False, **kwargs) -> BuildingNet_aux_tf:
+    psize = kernel_size_ref[target_resolution]
+    if psize == 15:
+        in_plane = 64
+        num_block = 2
+    elif psize == 30:
+        in_plane = 64
+        num_block = 1
+    elif psize == 60:
+        in_plane = 64
+        num_block = 1
+    else:
+        in_plane = 64
+        num_block = 1
+
+    model = BuildingNet_aux_tf(input_channels=6, input_size=psize, aux_input_size=psize,
+                                in_plane=in_plane, num_aux=1, num_block=num_block, log_scale=log_scale, activation=activation, cuda_used=cuda_used)
+    model.build(input_shape=(None, psize, psize, 6))
 
     if "trained_record" in kwargs.keys():
         trained_record = kwargs["trained_record"]
         if trained_record is not None:
             model.load_pretrained_model(trained_record)
+
+    if model_resaved:
+        if "saved_path_tf" in kwargs.keys():
+            saved_path_tf = kwargs["saved_path_tf"]
+        else:
+            saved_path_torch = os.path.dirname(kwargs["trained_record"])
+            saved_path_tf = saved_path_torch + "_tf"
+        tf.saved_model.save(m, saved_path_tf)
    
     total_num = sum([count_params(w) for w in model.trainable_weights]) + sum([count_params(w) for w in model.non_trainable_weights])
     trainable_num = sum([count_params(w) for w in model.trainable_weights])
@@ -643,15 +669,38 @@ def model_SEResNetAuxTF(input_channels: int, input_size: int, aux_input_size: in
     return model
 
 
-def model_SEResNetMTLAuxTF(input_channels: int, input_size: int, aux_input_size: int, in_plane: int, num_block: int, num_aux=1, log_scale=False, cuda_used=True, **kwargs) -> BuildingNet_aux_tf:
-    model = BuildingNetMTL_aux_tf(input_channels=input_channels, input_size=input_size, aux_input_size=aux_input_size,
-                                    in_plane=in_plane, num_aux=num_aux, num_block=num_block, log_scale=log_scale, cuda_used=cuda_used)
-    model.build(input_shape=(None, input_size, input_size, input_channels))
+def model_SEResNetMTLAuxTF(target_resolution: int, log_scale=False, cuda_used=True, model_resaved=False, **kwargs) -> BuildingNet_aux_tf:
+    psize = kernel_size_ref[target_resolution]
+    if psize == 15:
+        in_plane = 64
+        num_block = 2
+    elif psize == 30:
+        in_plane = 64
+        num_block = 1
+    elif psize == 60:
+        in_plane = 64
+        num_block = 1
+    else:
+        in_plane = 64
+        num_block = 1
+
+    model = BuildingNetMTL_aux_tf(input_channels=6, input_size=psize, aux_input_size=psize,
+                                    in_plane=in_plane, num_aux=1, num_block=num_block, log_scale=log_scale, cuda_used=cuda_used)
+    model.build(input_shape=(None, psize, psize, 6))
 
     if "trained_record" in kwargs.keys():
         trained_record = kwargs["trained_record"]
         if trained_record is not None:
             model.load_pretrained_model(trained_record)
+    
+    if model_resaved:
+        if "saved_path_tf" in kwargs.keys():
+            saved_path_tf = kwargs["saved_path_tf"]
+        else:
+            saved_path_torch = os.path.dirname(kwargs["trained_record"])
+            saved_path_tf = saved_path_torch + "_tf"
+        # ------to load the model back, we can use `tf.keras.models.load_model`
+        model.save(saved_path_tf)
    
     total_num = sum([count_params(w) for w in model.trainable_weights]) + sum([count_params(w) for w in model.non_trainable_weights])
     trainable_num = sum([count_params(w) for w in model.trainable_weights])
@@ -666,8 +715,7 @@ if __name__ == "__main__":
     os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
     '''
 
-    # m = model_ResNetTF(in_plane=64, input_channels=6, input_size=30, num_block=4)
-    m = model_SEResNetAuxTF(in_plane=64, input_channels=6, input_size=20, aux_input_size=20, num_block=1)
+    m = model_SEResNetAuxTF(target_resolution=100)
 
     '''
     # ---check the trainable_variables in Tensorflow's implementation
@@ -683,7 +731,7 @@ if __name__ == "__main__":
     '''
 
     # ---load pretrained weights from PyTorch
-    pretrained_weight = os.path.join("DL_run", "res_file", "check_pt_senet_100m", "experiment_7", "checkpoint.pth.tar")
+    pretrained_weight = os.path.join("DL_run", "height", "check_pt_senet_100m", "experiment_7", "checkpoint.pth.tar")
     m.load_pretrained_model(trained_record=pretrained_weight)
 
     # ---save the model in Tensorflow's implementation
