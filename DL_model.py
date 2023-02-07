@@ -237,7 +237,7 @@ class SENetBackbone_tf(layers.Layer):
             self.maxpool = layers.MaxPool2D(pool_size=3, strides=2, padding="same")
             num_reduce = int(math.floor(math.log(input_size / 2, 2)) - 3)
         else:
-            self.conv1 = layers.Conv2D(filters=self.in_plane, kernel_size=3, strides=2, padding="same", use_bias=False,
+            self.conv1 = layers.Conv2D(filters=self.in_plane, kernel_size=3, strides=1, padding="same", use_bias=False,
                                             name=".".join([prev_name, "conv1"]))
             num_reduce = int(math.floor(math.log(input_size / 2, 2)) - 1)
 
@@ -344,18 +344,19 @@ class BuildingNet_aux_tf(tf.keras.Model):
     def call(self, dta_input, training=None):
         x  = dta_input[:, :, :, :-1]
         aux = tf.expand_dims(dta_input[:, :, :, -1], axis=-1)
+
         x = self.features(x, training=training)
         x = self.avgpool(x)
         x = self.flatten(x)
 
-        aux = self.aux_features(aux)
+        aux = self.aux_features(aux, training=training)
         aux = self.avgpool(aux)
         aux = self.flatten(aux)
 
         x = tf.concat([x, aux], axis=1)
 
         x = self.fc(x)
-        x = self.bn_out(x)
+        x = self.bn_out(x, training=training)
         x = self.relu(x)
         x = self.fc_out(x)
 
@@ -369,6 +370,7 @@ class BuildingNet_aux_tf(tf.keras.Model):
             print([tensor.shape for tensor in l.get_weights()])
 
     def load_pretrained_model(self, trained_record):
+        print("Loading the model from: " + trained_record)
         torch_state_dict = torch.load(trained_record, map_location=torch.device('cpu'))["state_dict"]
         # ------initialize fc layer
         tf_fc = self.get_layer("fc")
@@ -512,20 +514,20 @@ class BuildingNetMTL_aux_tf(tf.keras.Model):
         x = self.avgpool(x)
         x = self.flatten(x)
 
-        aux = self.aux_features(aux)
+        aux = self.aux_features(aux, training=training)
         aux = self.avgpool(aux)
         aux = self.flatten(aux)
 
         feature_shared = tf.concat([x, aux], axis=1)
 
         feature_fc1_footprint = self.fc_footprint(feature_shared)
-        feature_fc1_footprint = self.bn_out_footprint(feature_fc1_footprint)
+        feature_fc1_footprint = self.bn_out_footprint(feature_fc1_footprint, training=training)
         feature_fc1_footprint = self.relu(feature_fc1_footprint)
         footprint = self.fc_out_footprint(feature_fc1_footprint)
         footprint = tf.keras.activations.sigmoid(footprint)
 
         feature_fc1_height = self.fc_height(feature_shared)
-        feature_fc1_height = self.bn_out_height(feature_fc1_height)
+        feature_fc1_height = self.bn_out_height(feature_fc1_height, training=training)
         feature_fc1_height = self.relu(feature_fc1_height)
         height = self.fc_out_height(feature_fc1_height)
         height = tf.keras.activations.relu(height)
@@ -648,7 +650,7 @@ def model_SEResNetAuxTF(target_resolution: int, log_scale=False, activation="rel
 
     model = BuildingNet_aux_tf(input_channels=6, input_size=psize, aux_input_size=psize,
                                 in_plane=in_plane, num_aux=1, num_block=num_block, log_scale=log_scale, activation=activation, cuda_used=cuda_used)
-    model.build(input_shape=(None, psize, psize, 6))
+    model.build(input_shape=(None, psize, psize, 7))
 
     if "trained_record" in kwargs.keys():
         trained_record = kwargs["trained_record"]
@@ -660,8 +662,9 @@ def model_SEResNetAuxTF(target_resolution: int, log_scale=False, activation="rel
             saved_path_tf = kwargs["saved_path_tf"]
         else:
             saved_path_torch = os.path.dirname(kwargs["trained_record"])
-            saved_path_tf = saved_path_torch + "_tf"
-        tf.saved_model.save(m, saved_path_tf)
+            saved_path_tf = saved_path_torch + "_TF"
+        model.compute_output_shape(input_shape=(None, psize, psize, 7))
+        model.save(saved_path_tf)
    
     total_num = sum([count_params(w) for w in model.trainable_weights]) + sum([count_params(w) for w in model.non_trainable_weights])
     trainable_num = sum([count_params(w) for w in model.trainable_weights])
@@ -686,7 +689,7 @@ def model_SEResNetMTLAuxTF(target_resolution: int, log_scale=False, cuda_used=Tr
 
     model = BuildingNetMTL_aux_tf(input_channels=6, input_size=psize, aux_input_size=psize,
                                     in_plane=in_plane, num_aux=1, num_block=num_block, log_scale=log_scale, cuda_used=cuda_used)
-    model.build(input_shape=(None, psize, psize, 6))
+    model.build(input_shape=(None, psize, psize, 7))
 
     if "trained_record" in kwargs.keys():
         trained_record = kwargs["trained_record"]
@@ -698,8 +701,9 @@ def model_SEResNetMTLAuxTF(target_resolution: int, log_scale=False, cuda_used=Tr
             saved_path_tf = kwargs["saved_path_tf"]
         else:
             saved_path_torch = os.path.dirname(kwargs["trained_record"])
-            saved_path_tf = saved_path_torch + "_tf"
+            saved_path_tf = saved_path_torch + "_TF"
         # ------to load the model back, we can use `tf.keras.models.load_model`
+        model.compute_output_shape(input_shape=(None, psize, psize, 7))
         model.save(saved_path_tf)
    
     total_num = sum([count_params(w) for w in model.trainable_weights]) + sum([count_params(w) for w in model.non_trainable_weights])
@@ -715,7 +719,9 @@ if __name__ == "__main__":
     os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
     '''
 
-    m = model_SEResNetAuxTF(target_resolution=100)
+    # ---load pretrained weights from PyTorch
+    pretrained_weight = os.path.join("DL_run", "height", "check_pt_senet_100m", "checkpoint.pth.tar")
+    m = model_SEResNetAuxTF(target_resolution=100, trained_record=pretrained_weight, cuda_used=False, model_resaved=True, saved_path_tf="DL_run/height/check_pt_senet_100m_TF")
 
     '''
     # ---check the trainable_variables in Tensorflow's implementation
@@ -730,15 +736,7 @@ if __name__ == "__main__":
         print(a)
     '''
 
-    # ---load pretrained weights from PyTorch
-    pretrained_weight = os.path.join("DL_run", "height", "check_pt_senet_100m", "experiment_7", "checkpoint.pth.tar")
-    m.load_pretrained_model(trained_record=pretrained_weight)
-
-    # ---save the model in Tensorflow's implementation
-    tf_saved_path = os.path.join("DL_run", "res_file", "check_pt_senet_100m", "experiment_7", "BuildingNet")
-    tf.saved_model.save(m, tf_saved_path)
-
     # ---test whether the output of Tensorflow's implementation agrees with PyTorch's implementation
-    test_dta = tf.ones(shape=[8, 15, 15, 6])
+    test_dta = tf.concat([tf.ones(shape=[1, 20, 20, 7])*i for i in range(0, 8)], axis=0)
     test_out = m(test_dta, training=False)
     print(test_out)

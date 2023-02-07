@@ -17,7 +17,7 @@ GS_UTILS_BIN = "/Users/lyy/Downloads/lib_added/google-cloud-sdk/bin/gsutil"
 REGION = "us-central1"
 
 # ---Cloud Storage bucket into which prediction datset will be written
-BUCKET = "lyy_bucket-1"
+BUCKET = "lyy_shafts"
 
 DATA_FOLDER = "dataset_tmp"
 
