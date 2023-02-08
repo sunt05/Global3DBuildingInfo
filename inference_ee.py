@@ -8,18 +8,27 @@ import matplotlib.pyplot as plt
 import tensorflow as tf
 import rasterio
 import rasterio.transform as rtransform
+from google.cloud import storage
 
 from utils import *
 from DL_model import *
 
 
-GS_UTILS_BIN = "/Users/lyy/Downloads/lib_added/google-cloud-sdk/bin/gsutil"
 REGION = "us-central1"
 
-# ---Cloud Storage bucket into which prediction datset will be written
-BUCKET = "lyy_shafts"
+# ---Google Cloud Service settings
+PROJECT_ID = "robotic-door-289313"
+# ------following keys can be generated at: https://console.cloud.google.com/iam-admin/serviceaccounts
+GS_OAUTH2_PRIVATE_KEY = "*******************************"
+GS_OAUTH2_CLIENT_EMAIL = "*******************************"
+
+# ---Google Cloud Storage bucket into which prediction datset will be written
+BUCKET = "lyy-shafts"
 
 DATA_FOLDER = "dataset_tmp"
+OUTPUT_FOLDER = "results"
+BH_OUTPUT_GCS_PREFIX = "gs://" + BUCKET + "/" + OUTPUT_FOLDER + "/" + "height"
+BF_OUTPUT_GCS_PREFIX = "gs://" + BUCKET + "/" + OUTPUT_FOLDER + "/" + "footprint"
 
 STL_MODEL_FOLDER = "STL"
 STL_MODEL_GCS_PREFIX = "gs://" + BUCKET + "/" + STL_MODEL_FOLDER
@@ -27,13 +36,8 @@ STL_MODEL_GCS_PREFIX = "gs://" + BUCKET + "/" + STL_MODEL_FOLDER
 MTL_MODEL_FOLDER = "MTL"
 MTL_MODEL_GCS_PREFIX = "gs://" + BUCKET + "/" + MTL_MODEL_FOLDER
 
-# ---Directory specification
-# MODEL_DIR = "gs://" + OUTPUT_BUCKET + "/{0}".format(MODEL)
-# ------put the EEified model next to the trained model directory
-#EEIFIED_DIR = "gs://" + OUTPUT_BUCKET + "/eeified_{0}".format(MODEL)
 
-
-FEATURES = ["VV_p50", "VH_p50", "B4", "B3", "B2", "elevation"]
+FEATURES = ["VV_p50", "VH_p50", "B4", "B3", "B2", "B8", "elevation"]
 
 
 def export_satData_GEE(lon_min: Union[int, float], lat_min: Union[int, float], lon_max: Union[int, float], lat_max: Union[int, float], year: int, target_resolution: int, dst_dir: str, destination="CloudStorage", file_prefix=None, padding=0.04, patch_size_ratio=1, s2_cloud_prob_threshold=20, s2_cloud_prob_max=80):
@@ -61,6 +65,8 @@ def export_satData_GEE(lon_min: Union[int, float], lat_min: Union[int, float], l
         The default is `0.04`.
 
     """
+    # S2_SCALE = 0.0001
+    S2_SCALE = 1.0
     ee.Initialize()
 
     if any([not isinstance(lon_min, int), not isinstance(lon_max, int), not isinstance(lat_min, int), not isinstance(lat_max, int)]):
@@ -125,6 +131,8 @@ def export_satData_GEE(lon_min: Union[int, float], lat_min: Union[int, float], l
     s1_ds = s1_ds.filterBounds(target_bd)
     s1_img = s1_ds.reduce(ee.Reducer.percentile([50]))
     s1_img = s1_img.clip(target_bd)
+    # ------transform VV/VH bands of Sentinel-1 images to corresponding backscattering coefficients for the compatibility with SHAFTS
+    s1_img = get_backscatterCoef_EE(s1_img).multiply(255.0)
 
     # ------filter the Sentinel-2 cloud-free data
     s2_cld_threshold_base = 50
@@ -188,6 +196,9 @@ def export_satData_GEE(lon_min: Union[int, float], lat_min: Union[int, float], l
             break
     
     s2_img_cloudFree = s2_img_cloudFree.select(["B4", "B3", "B2", "B8"])
+    # ------rescale R/G/B/NIR bands of Sentinel-2 to [0, 255] for the compatibility with SHAFTS
+    #s2_img_cloudFree = get_normalizedImage_EE(s2_img_cloudFree)
+    s2_img_cloudFree = s2_img_cloudFree.multiply(S2_SCALE * 255.0)
 
     kernelSize = int(target_resolution / 10.0)
     overlapSize = overlapSize_ref[target_resolution]
@@ -310,60 +321,16 @@ def createInferDataset(recordPathList: List[str], target_resolution: int, batch_
     plt.imshow(dta[0][0][0, :, :, 0], vmin=-11, vmax=-5, cmap="turbo")
     plt.show()
     '''
+    print("Dataset parsed: {0}".format([" ".join(recordPathList)]))
 
     return imgDataset
     
 
 def GBuildingMap(lon_min: Union[int, float], lat_min: Union[int, float], lon_max: Union[int, float], lat_max: Union[int, float], year: int, pretrained_model: Union[Dict[str, str], str], target_resolution: int, file_prefix=None, padding=0.02, patch_size_ratio=1, s2_cloud_prob_threshold=20, s2_cloud_prob_max=80, MTL=True, removed=True):
+    # ------set a client for operations related to Google Cloud Storage
+    client_GCS = storage.Client(project=PROJECT_ID)
+    bucket_src = client_GCS.get_bucket(BUCKET) 
     # ------export patched datasets from Google Earth Engine (GEE) to Google Cloud Storage (GCS)
-    export_satData_GEE(lon_min=lon_min, lat_min=lat_min, lat_max=lat_max, lon_max=lon_max, year=year, target_resolution=target_resolution,
-                            dst_dir=DATA_FOLDER, destination="CloudStorage", file_prefix=file_prefix, padding=padding, patch_size_ratio=patch_size_ratio,
-                            s2_cloud_prob_threshold=s2_cloud_prob_threshold, s2_cloud_prob_max=s2_cloud_prob_max)
-    
-    # ------prepare the TFRecords dataset on GCS
-    ds_foloder = "'gs://{0}/{1}".format(BUCKET, DATA_FOLDER)
-    record_bytes = subprocess.Popen("/bin/sh {0} ls {1}".format(GS_UTILS_BIN, ds_foloder), stdout=subprocess.PIPE).stdout.read()
-    record_list = [f for f in record_bytes.decode().split("\n")[:-1] if f.endswith(".tfrecord.gz")]
-    
-    img_ds = createInferDataset(record_list, target_resolution)
-
-    # ---------determine the information of dimensions of the dataset
-    h, w = re.findall(pattern=r"H(\d+)W(\d+)", string=record_list[0])[0]
-    h = int(h)
-    w = int(w)
-    
-    # ------model configuration
-    cuda_used = (cuda_used and torch.cuda.is_available())
-
-    if MTL:
-        # ------prepare the Tensorflow-based MTL models
-        m = tf.keras.models.load_model(pretrained_model)
-        '''
-        m = model_SEResNetMTLAuxTF(input_channels=6, input_size=psize, aux_input_size=psize, in_plane=in_plane, num_block=num_block, num_aux=1,
-                                        log_scale=False, cuda_used=cuda_used, trained_record=pretrained_model)
-        '''
-        footprint_dta, height_dta = m.predict(x=img_ds, verbose=1)
-    else:
-        # ------prepare the Tensorflow-based STL models
-        m_footprint = tf.keras.models.load_model(pretrained_model["footprint"])
-        '''
-        m_footprint = model_SEResNetAuxTF(input_channels=6, input_size=psize, aux_input_size=psize, in_plane=in_plane, num_block=num_block, num_aux=1,
-                                            log_scale=False, activation="sigmoid", cuda_used=cuda_used, trained_record=pretrained_model["footprint"])
-        '''
-        footprint_dta = m_footprint.predict(x=img_ds, verbose=1)
-
-        res = np.reshape(res, newshape=(h, w))
-        m_height = tf.keras.models.load_model(pretrained_model["height"])
-        '''
-        m_height = model_SEResNetAuxTF(input_channels=6, input_size=psize, aux_input_size=psize, in_plane=in_plane, num_block=num_block, num_aux=1,
-                                            log_scale=False, activation="relu", cuda_used=cuda_used, trained_record=pretrained_model["height"])
-        '''
-        height_dta = m_height.predict(x=img_ds, verbose=1)
-    
-    footprint_dta = np.reshape(footprint_dta, newshape=(h, w))
-    height_dta = np.reshape(height_dta, newshape=(h, w))
-
-    # ------export predicted images to Google Cloud Storage
     if any([not isinstance(lon_min, int), not isinstance(lon_max, int), not isinstance(lat_min, int), not isinstance(lat_max, int)]):
         lon_min_f, lon_min_i = math.modf(lon_min)
         lon_min_str = "%d.%d" % (lon_min_i, round(lon_min_f * 100))
@@ -377,22 +344,78 @@ def GBuildingMap(lon_min: Union[int, float], lat_min: Union[int, float], lon_max
     else:
         file_suffix = "_".join([str(lon_min), str(lon_max_str), str(lat_min_str), str(lat_max_str)])
 
-    output_geo_trans = rtransform.Affine(target_resolution, 0.0, lon_min, 0.0, -target_resolution, lat_max)
+    export_satData_GEE(lon_min=lon_min, lat_min=lat_min, lat_max=lat_max, lon_max=lon_max, year=year, target_resolution=target_resolution,
+                            dst_dir=DATA_FOLDER, destination="CloudStorage", file_prefix=file_prefix, padding=padding, patch_size_ratio=patch_size_ratio,
+                            s2_cloud_prob_threshold=s2_cloud_prob_threshold, s2_cloud_prob_max=s2_cloud_prob_max)
 
-    footprint_name = "BF" + "_" + file_suffix
+    # ------prepare the TFRecords dataset on GC
+    fullPath_list = [f.name for f in bucket_src.list_blobs(prefix=DATA_FOLDER)]
+    record_list = ["gs://" + BUCKET + "/" + f for f in fullPath_list if f.endswith(".tfrecord.gz") if file_suffix in f]
+    
+    img_ds = createInferDataset(record_list, target_resolution)
+
+    # ---------determine the information of dimensions of the dataset
+    h, w = re.findall(pattern=r"H(\d+)W(\d+)", string=record_list[0])[0]
+    h = int(h)
+    w = int(w)
+    
+    # ------model configuration
+    if MTL:
+        # ------prepare the Tensorflow-based MTL models
+        m_path = MTL_MODEL_GCS_PREFIX + "/" + pretrained_model
+        m = tf.keras.models.load_model(pretrained_model)
+        print("Model loaded from: {0}".format(m_path))
+        '''
+        m = model_SEResNetMTLAuxTF(input_channels=6, input_size=psize, aux_input_size=psize, in_plane=in_plane, num_block=num_block, num_aux=1,
+                                        log_scale=False, cuda_used=cuda_used, trained_record=pretrained_model)
+        '''
+        footprint_dta, height_dta = m.predict(x=img_ds, verbose=1)
+    else:
+        # ------prepare the Tensorflow-based STL models
+        #m_footprint_path = STL_MODEL_GCS_PREFIX + "/footprint/" + pretrained_model["footprint"]
+        #m_footprint = tf.keras.models.load_model(pretrained_model["footprint"])
+        #print("Model loaded from: {0}".format(m_footprint_path))
+        '''
+        m_footprint = model_SEResNetAuxTF(input_channels=6, input_size=psize, aux_input_size=psize, in_plane=in_plane, num_block=num_block, num_aux=1,
+                                            log_scale=False, activation="sigmoid", cuda_used=cuda_used, trained_record=pretrained_model["footprint"])
+        '''
+        #footprint_dta = m_footprint.predict(x=img_ds, verbose=1)
+
+        m_height_path = STL_MODEL_GCS_PREFIX + "/height/" + pretrained_model["height"]
+        m_height = tf.keras.models.load_model(m_height_path)
+        print("Model loaded from: {0}".format(m_height_path))
+        height_dta = m_height.predict(x=img_ds, verbose=1)
+    
+    # footprint_dta = np.reshape(footprint_dta, newshape=(h, w))
+    height_dta = np.reshape(height_dta, newshape=(h, w))
+
+    # ------export predicted images to Google Cloud Storage
+    output_geo_trans = rtransform.Affine(degree_ref[target_resolution], 0.0, lon_min, 0.0, -degree_ref[target_resolution], lat_max)
+
+    footprint_name = BF_OUTPUT_GCS_PREFIX + "/" + "BF" + "_" + file_suffix + ".tif"
+    '''
     with rasterio.open(footprint_name, "w+", width=w, height=h, count=1, crs="EPSG:4326", transform=output_geo_trans, dtype="float32") as out:
         out.write_band(1, footprint_dta)
+    print("Output BuildingFootprint File: " + footprint_name)
+    '''
     
-    height_name = "BH" + "_" + file_suffix
-    with rasterio.open(height_name, "w+", width=w, height=h, count=1, crs="EPSG:4326", transform=output_geo_trans, dtype="float32") as out:
-        out.write_band(1, height_dta)
+    # height_name = BH_OUTPUT_GCS_PREFIX + "/" + "BH" + "_" + file_suffix + ".tif"
+    height_name = "./results/BH" + "/" + "BH" + "_" + file_suffix + ".tif"
+    # with rasterio.Env(GS_OAUTH2_PRIVATE_KEY=GS_OAUTH2_PRIVATE_KEY, GS_OAUTH2_CLIENT_EMAIL=GS_OAUTH2_CLIENT_EMAIL):
+    with rasterio.Env():
+        with rasterio.open(height_name, "w+", width=w, height=h, count=1, crs="EPSG:4326", transform=output_geo_trans, dtype="float32") as out:
+            out.write_band(1, height_dta)
+        print("*" * 10 + " Output BuildingHeight File: {0} ".format(height_name) + "*" * 10)
     
-    # ------delete temporary TFRcords files on the fly
+    # ------delete temporary TFRcords files on the Google Cloud Storage
     if removed:
-        subprocess.call("/bin/sh {0} rm {1}".format(GS_UTILS_BIN, " ".join(record_list)))
+        for blob in bucket_src.list_blobs(prefix=DATA_FOLDER):
+            if file_suffix in blob.name:
+                blob.delete()
         
 
 if __name__ == "__main__":
     # export_satData_GEE(lon_min=0, lat_min=51.2, lon_max=0.09, lat_max=51.29, year=2020, file_prefix="_", target_resolution=100, padding=0.01, s2_cloud_prob_threshold=20, s2_cloud_prob_max=80)
     # createInferDataset(["testSample/__0.0_0.9_51.20_51.29_H100W100.tfrecord.gz"], target_resolution=100)
-    pass
+    pretrained_weight = {"height": "check_pt_senet_100m_TF"}
+    GBuildingMap(lon_min=0, lat_min=51.2, lon_max=0.09, lat_max=51.29, year=2020, pretrained_model=pretrained_weight, target_resolution=100, file_prefix="_", padding=0.02, patch_size_ratio=1, s2_cloud_prob_threshold=20, s2_cloud_prob_max=80, MTL=False, removed=True)

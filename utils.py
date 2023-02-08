@@ -34,6 +34,30 @@ CLD_PRJ_DIST_step = 0.5
 CLD_PRJ_DIST_min = 1
 
 
+def get_backscatterCoef_EE(raw_s1_img: ee.Image):
+  img_10 = ee.Image(10)
+  coef = img_10.pow(raw_s1_img.divide(img_10)).clamp(0.0, 1.0)
+
+  return coef
+
+
+def get_normalizedImage_EE(img: ee.Image, scale=10, q1=0.98, q2=0.02, vmin=0.0, vmax=1.0):
+  bandnamelist = img.bandNames().getInfo()
+  roi = img.geometry()
+  band_normalizedList = []
+  q1_100 = int(q1 * 100)
+  q2_100 = int(q2 * 100)
+  for b in bandnamelist:
+    min_max_ref = img.select(b).reduceRegion(reducer=ee.Reducer.percentile([q1_100, q2_100]), geometry=roi, scale=scale, maxPixels=1e14)
+    print(min_max_ref.getInfo())
+    band_n = img.select(b).unitScale(min_max_ref.get(b+"_p{0}".format(q2_100)), min_max_ref.get(b+"_p{0}".format(q1_100)))
+    band_normalizedList.append(band_n)
+
+  img_n = ee.Image.cat(band_normalizedList).clamp(vmin, vmax)
+
+  return img_n
+
+
 def mergeCollection_LightGBM(imgC: ee.ImageCollection):
     # Select the best images, which are below the cloud free threshold, sort them in reverse order (worst on top) for mosaicing
     best = imgC.filter(ee.Filter.lt('CLOUDY_PERCENTAGE', cloudFreeKeepThresh)).sort('CLOUDY_PERCENTAGE_ROI', False)
