@@ -58,20 +58,79 @@ def get_normalizedImage_EE(img: ee.Image, scale=10, q1=0.98, q2=0.02, vmin=0.0, 
   return img_n
 
 
+def getPopInfo(dx=0.09, dy=0.09):
+  # ------ref to: https://unstats.un.org/unsd/demographic/sconcerns/densurb/defintion_of%20urban.pdf
+  # ------ref to: https://ourworldindata.org/urbanization
+  hrsl_popC = ee.ImageCollection("projects/sat-io/open-datasets/hrsl/hrslpop")
+
+  lon_min_list = []
+  lon_max_list = []
+  lat_min_list = []
+  lat_max_list = []
+  area_list = []
+  num_pop_list = []
+  pop_density_list = []
+  for lon_min in np.arange(-180, 180, dx):
+    lon_max = lon_min + dx
+    for lat_min in np.arange(-90, 90, dy):
+      lat_max = lat_min + dy
+
+      point_left_top = [lon_min, lat_max]
+      point_right_top = [lon_max, lat_max]
+      point_right_bottom = [lon_max, lat_min]
+      point_left_bottom = [lon_min, lat_min]
+
+      target_bd = ee.Geometry.Polygon([point_left_top, point_right_top, point_right_bottom, point_left_bottom, point_left_top])
+      hrsl_popC_tmp = hrsl_popC.filterBounds(target_bd)
+      hrsl_pop_img = hrsl_popC_tmp.mosaic()
+      hrsl_pop_img = hrsl_pop_img.clip(target_bd)
+      # ------calculate the area of the target region (in km2)
+      hrsl_area = ee.Number(hrsl_pop_img.geometry().area())
+      hrsl_area = hrsl_area.getInfo() / 1000.0 / 1000.0
+      # ------calculate the neibhboring population density for the target region
+      # ------calculate the total number of population for the target region
+      pop_sum = hrsl_pop_img.reduceRegion(reducer=ee.Reducer.sum(), geometry=target_bd, scale=30, maxPixels=1e14)
+      pop_sum = pop_sum.get('b1').getInfo()
+      # print(hrsl_area.getInfo(), "\t", pop_sum.get('b1').getInfo())
+      lon_min_list.append(lon_min)
+      lon_max_list.append(lon_max)
+      lat_min_list.append(lat_min)
+      lat_max_list.append(lat_max)
+      area_list.append(hrsl_area)
+      num_pop_list.append(pop_sum)
+      pop_density_list.append(pop_sum / hrsl_area)
+      print("\t".join([str(lon_min), str(lon_max), str(lat_min), str(lat_max), str(pop_sum / hrsl_area)]))
+  
+  hrsl_df = pd.DataFrame({"lon_min": lon_min_list, "lon_max": lon_max_list, "lat_min": lat_min_list, "lat_max": lat_max_list, "area": area_list, "num_pop": num_pop_list, "pop_density": pop_density_list})
+  hrsl_df.to_csv("HRSL_info.csv", index=False)
+  
+  '''
+  task_config = {"image": hrsl_pop_img.toFloat(),
+                  "description": "hrsl_tmp",
+                  "folder": "Global_export",
+                  "scale": 30,
+                  "maxPixels": 1e13,
+                  "crs": 'EPSG:4326'}
+  task = ee.batch.Export.image.toDrive(**task_config)
+  
+  task.start()
+  '''
+
+
 def mergeCollection_LightGBM(imgC: ee.ImageCollection):
-    # Select the best images, which are below the cloud free threshold, sort them in reverse order (worst on top) for mosaicing
-    best = imgC.filter(ee.Filter.lt('CLOUDY_PERCENTAGE', cloudFreeKeepThresh)).sort('CLOUDY_PERCENTAGE_ROI', False)
-    
-    # Composites all the images in a collection, using a quality band as a per-pixel ordering function (use pixels with the HIGHEST score).
-    filtered = imgC.qualityMosaic('cloudShadowScore')
+  # Select the best images, which are below the cloud free threshold, sort them in reverse order (worst on top) for mosaicing
+  best = imgC.filter(ee.Filter.lt('CLOUDY_PERCENTAGE', cloudFreeKeepThresh)).sort('CLOUDY_PERCENTAGE_ROI', False)
+  
+  # Composites all the images in a collection, using a quality band as a per-pixel ordering function (use pixels with the HIGHEST score).
+  filtered = imgC.qualityMosaic('cloudShadowScore')
 
-    # Add the quality mosaic to fill in any missing areas of the ROI which aren't covered by good images
-    newC = ee.ImageCollection.fromImages([filtered, best.mosaic()])
+  # Add the quality mosaic to fill in any missing areas of the ROI which aren't covered by good images
+  newC = ee.ImageCollection.fromImages([filtered, best.mosaic()])
 
-    # Note that the `mosaic` method composites overlapping images according to their order in the collection (last, i.e., best, on top)
-    return ee.Image(newC.mosaic())
-    
-    #return best.median()
+  # Note that the `mosaic` method composites overlapping images according to their order in the collection (last, i.e., best, on top)
+  return ee.Image(newC.mosaic())
+  
+  #return best.median()
 
 
 def apply_cloud_shadow_mask(img: ee.Image):
@@ -443,8 +502,7 @@ def sentinel2cloudFree_download(sample_csv: str, dst_dir: str, path_prefix=None,
 
 if __name__ == "__main__":
   '''
-  sentinel2cloudFree_download(sample_csv="GEE_Download_2022.csv", dst_dir="Sentinel-2_export_CF", path_prefix="/Users/lyy/Downloads/Bldg", 
-                                padding=0.04, dst="Drive")
-  '''
   sentinel2cloudFree_download(sample_csv="GEE_Download_2022_back.csv", dst_dir="Sentinel-2_export_CF", path_prefix="/Volumes/ForLyy/Temp/ReferenceData", 
                                 padding=0.05, cloud_prob_threshold=30, dst="Drive")
+  '''
+  getPopInfo(dx=0.09, dy=0.09)

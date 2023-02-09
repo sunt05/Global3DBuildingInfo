@@ -305,6 +305,9 @@ def toTupleImage(feature_dict: Dict[str, tf.Tensor]):
     feat_sentinel = tf.experimental.numpy.flip(feat_stacked[:, :, :-1], axis=0)
     feat_aux = tf.expand_dims(feat_stacked[:, :, -1], -1)
     feat = tf.concat([feat_sentinel, feat_aux], axis=-1)
+    # ---------Note that for SHAFTS v202203, the required data type of input bands are UINT8.
+    #feat = tf.cast(feat, tf.uint8)
+    #feat = tf.cast(feat, tf.float32)
 
     return feat
 
