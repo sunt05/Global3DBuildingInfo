@@ -6,6 +6,7 @@ import time
 import ee
 import matplotlib.pyplot as plt
 import tensorflow as tf
+import tensorflow_probability as tfp
 import rasterio
 import rasterio.transform as rtransform
 from google.cloud import storage
@@ -132,7 +133,7 @@ def export_satData_GEE(lon_min: Union[int, float], lat_min: Union[int, float], l
     s1_img = s1_ds.reduce(ee.Reducer.percentile([50]))
     s1_img = s1_img.clip(target_bd)
     # ------transform VV/VH bands of Sentinel-1 images to corresponding backscattering coefficients for the compatibility with SHAFTS
-    s1_img = get_backscatterCoef_EE(s1_img).multiply(255.0)
+    # s1_img = get_backscatterCoef_EE(s1_img)
 
     # ------filter the Sentinel-2 cloud-free data
     s2_cld_threshold_base = 50
@@ -198,7 +199,6 @@ def export_satData_GEE(lon_min: Union[int, float], lat_min: Union[int, float], l
     s2_img_cloudFree = s2_img_cloudFree.select(["B4", "B3", "B2", "B8"])
     # ------rescale R/G/B/NIR bands of Sentinel-2 to [0, 255] for the compatibility with SHAFTS
     #s2_img_cloudFree = get_normalizedImage_EE(s2_img_cloudFree)
-    s2_img_cloudFree = s2_img_cloudFree.multiply(S2_SCALE * 255.0)
 
     kernelSize = int(target_resolution / 10.0)
     overlapSize = overlapSize_ref[target_resolution]
@@ -296,18 +296,46 @@ def parseSatTFRecord(example_proto: tf.train.Example, target_resolution: int, pa
     return featParsed_ref
 
 
+def rgb_rescale_tf(dta: tf.Tensor, q1=0.98, q2=0.02, vmin=0.0, vmax=1.0):
+    val_min = tf.math.reduce_min(dta, axis=(0, 1))
+    val_min = tf.expand_dims(tf.expand_dims(val_min, axis=0), axis=0)
+
+    val_high = tfp.stats.percentile(dta, q1 * 100, axis=(0, 1))
+    val_high = tf.expand_dims(tf.expand_dims(val_high, axis=0), axis=0)
+    val_low = tfp.stats.percentile(dta, q2 * 100, axis=(0, 1))
+    val_low = tf.expand_dims(tf.expand_dims(val_low, axis=0), axis=0)
+    
+    dta_rescale = (dta - val_min) * (vmax - vmin) / (val_high - val_low) + vmin
+
+    dta_clipped = tf.clip_by_value(dta_rescale, vmin, vmax)
+    # ------set NaN value to be vmin
+    # dta_clipped[~np.isfinite(dta_clipped)] = vmin
+
+    return dta_clipped
+
+
+def get_backscatterCoef_tf(raw_s1_dta: tf.Tensor):
+    coef = tf.math.pow(10.0, raw_s1_dta / 10.0)
+    coef = tf.where(coef > 1.0, 1.0, coef)
+    return coef
+
+
 def toTupleImage(feature_dict: Dict[str, tf.Tensor]):
     featList = [feature_dict.get(k) for k in FEATURES]
     feat_stacked = tf.stack(featList, axis=0)
     # ------convert CHW to HWC
     feat_stacked = tf.transpose(feat_stacked, [1, 2, 0])
+
     # ------the y-axis of exported patches should be flipped
-    feat_sentinel = tf.experimental.numpy.flip(feat_stacked[:, :, :-1], axis=0)
+    # feat_sentinel = tf.experimental.numpy.flip(feat_stacked[:, :, :-1], axis=0)
+    feat_sentinel = feat_stacked[:, :, :-1]
+    # ---------Note that for SHAFTS v202203, the required data type of input Sentinel's bands are UINT8 -> tf.float32.
+    feat_s1 = tf.cast(tf.cast(get_backscatterCoef_tf(feat_stacked[:, :, 0:2]) * 255, tf.uint8), tf.float32) / 255.0
+    feat_s2 = tf.cast(tf.cast(rgb_rescale_tf(feat_sentinel[:, :, 2:], vmin=0, vmax=255), tf.uint8), tf.float32) / 255.0
+
     feat_aux = tf.expand_dims(feat_stacked[:, :, -1], -1)
-    feat = tf.concat([feat_sentinel, feat_aux], axis=-1)
-    # ---------Note that for SHAFTS v202203, the required data type of input bands are UINT8.
-    #feat = tf.cast(feat, tf.uint8)
-    #feat = tf.cast(feat, tf.float32)
+
+    feat = tf.concat([feat_s1, feat_s2, feat_aux], axis=-1)
 
     return feat
 

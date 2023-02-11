@@ -1489,9 +1489,9 @@ if __name__ == "__main__":
     for name, param in m.state_dict().items():
         print(name)
     '''
-    test_dta = torch.concat([torch.ones(1, 6, 20, 20)*i for i in range(0, 8)], dim=0)
+    test_dta = torch.concat([torch.ones(1, 6, 20, 20)*i*i for i in range(0, 8)], dim=0)
 
-    test_aux = torch.concat([torch.ones(1, 1, 20, 20)*i for i in range(0, 8)], dim=0)
+    test_aux = torch.concat([torch.ones(1, 1, 20, 20)*i*i for i in range(0, 8)], dim=0)
 
     # test_out = m(test_dta)
     test_out = m(test_dta, test_aux)

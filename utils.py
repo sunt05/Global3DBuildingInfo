@@ -1,4 +1,5 @@
 import os
+import h5py
 import argparse
 import math
 import numpy as np
@@ -6,6 +7,9 @@ import datetime
 import pandas as pd
 from osgeo import gdal, ogr, osr
 import ee
+
+import geopandas as gpd
+from shapely.geometry import Polygon
 
 
 ee.Initialize()
@@ -58,10 +62,17 @@ def get_normalizedImage_EE(img: ee.Image, scale=10, q1=0.98, q2=0.02, vmin=0.0, 
   return img_n
 
 
-def getPopInfo(dx=0.09, dy=0.09):
+def getPopInfo(dx=0.09, dy=0.09, ratio=10, tol=0.2):
+  xMin = -8
+  xMax = 1
+  yMin = 49
+  yMax = 58
   # ------ref to: https://unstats.un.org/unsd/demographic/sconcerns/densurb/defintion_of%20urban.pdf
   # ------ref to: https://ourworldindata.org/urbanization
   hrsl_popC = ee.ImageCollection("projects/sat-io/open-datasets/hrsl/hrslpop")
+  hrsl_scale_meters = hrsl_popC.first().projection().nominalScale().getInfo()
+
+  world_adminBoundary = ee.FeatureCollection('projects/earthengine-legacy/assets/projects/sat-io/open-datasets/geoboundaries/CGAZ_ADM0')
 
   lon_min_list = []
   lon_max_list = []
@@ -70,51 +81,121 @@ def getPopInfo(dx=0.09, dy=0.09):
   area_list = []
   num_pop_list = []
   pop_density_list = []
-  for lon_min in np.arange(-180, 180, dx):
-    lon_max = lon_min + dx
-    for lat_min in np.arange(-90, 90, dy):
-      lat_max = lat_min + dy
 
-      point_left_top = [lon_min, lat_max]
-      point_right_top = [lon_max, lat_max]
-      point_right_bottom = [lon_max, lat_min]
-      point_left_bottom = [lon_min, lat_min]
+  x_csize = dx * ratio
+  y_csize = dy * ratio
 
-      target_bd = ee.Geometry.Polygon([point_left_top, point_right_top, point_right_bottom, point_left_bottom, point_left_top])
-      hrsl_popC_tmp = hrsl_popC.filterBounds(target_bd)
-      hrsl_pop_img = hrsl_popC_tmp.mosaic()
-      hrsl_pop_img = hrsl_pop_img.clip(target_bd)
-      # ------calculate the area of the target region (in km2)
-      hrsl_area = ee.Number(hrsl_pop_img.geometry().area())
-      hrsl_area = hrsl_area.getInfo() / 1000.0 / 1000.0
-      # ------calculate the neibhboring population density for the target region
-      # ------calculate the total number of population for the target region
-      pop_sum = hrsl_pop_img.reduceRegion(reducer=ee.Reducer.sum(), geometry=target_bd, scale=30, maxPixels=1e14)
-      pop_sum = pop_sum.get('b1').getInfo()
-      # print(hrsl_area.getInfo(), "\t", pop_sum.get('b1').getInfo())
-      lon_min_list.append(lon_min)
-      lon_max_list.append(lon_max)
-      lat_min_list.append(lat_min)
-      lat_max_list.append(lat_max)
-      area_list.append(hrsl_area)
-      num_pop_list.append(pop_sum)
-      pop_density_list.append(pop_sum / hrsl_area)
-      print("\t".join([str(lon_min), str(lon_max), str(lat_min), str(lat_max), str(pop_sum / hrsl_area)]))
+  #catch_flag = False
+  xcMin_ex = np.linspace(xMin, xMax, num=int(round((xMax - xMin) / x_csize, 0)), endpoint=False)
+  ycMin_ex = np.linspace(yMin, yMax, num=int(round((yMax - yMin) / y_csize, 0)), endpoint=False)
+
+  for xc_min in xcMin_ex:
+    xc_max = round(xc_min + x_csize, 7)     # ------round to 1 m
+    #if not catch_flag:
+    for yc_min in ycMin_ex:
+      #if not catch_flag:
+      yc_max = round(yc_min + y_csize, 7)   # ------round to 1 m
+      pt_left_top = [xc_min - tol, yc_max + tol]
+      pt_right_top = [xc_max + tol, yc_max + tol]
+      pt_right_bottom = [xc_max + tol, yc_min - tol]
+      pt_left_bottom = [xc_min - tol, yc_min - tol]
+      test_bd = ee.Geometry.Polygon([pt_left_top, pt_right_top, pt_right_bottom, pt_left_bottom, pt_left_top])
+      # ------only consider sub-images which have intersection with the existing administration boundaries
+      if test_bd.intersects(world_adminBoundary).getInfo():
+        pt_left_top = [xc_min, yc_max]
+        pt_right_top = [xc_max, yc_max]
+        pt_right_bottom = [xc_max, yc_min]
+        pt_left_bottom = [xc_min, yc_min]
+        
+        target_bd = ee.Geometry.Polygon([pt_left_top, pt_right_top, pt_right_bottom, pt_left_bottom, pt_left_top])
+        hrsl_popC_tmp = hrsl_popC.filterBounds(target_bd)
+        hrsl_pop_img = hrsl_popC_tmp.mosaic()
+        hrsl_pop_img = hrsl_pop_img.clip(target_bd)
+        # ------only consider sub-images which have intersection with the HRSL layer
+        if len(hrsl_pop_img.bandNames().getInfo()) > 0:
+        #if not hrsl_pop_img.eq(img_empty):
+          print("[Found intersection with HRSL layer] {0}".format(", ".join([str(xc_min), str(xc_max), str(yc_min), str(yc_max)])))
+          # ------generate central points of each potential ROI
+          xloc = np.arange(xc_min, xc_max, dx)
+          xCell_num = len(xloc)
+          yloc = np.arange(yc_max, yc_min, -dy)
+          yCell_num = len(yloc)
+          ROI_geomList = [ee.Geometry.Polygon([[xloc[xId], yloc[yId]], [xloc[xId]+dx, yloc[yId]], [xloc[xId]+dx, yloc[yId]-dy], [xloc[xId], yloc[yId]-dy], [xloc[xId], yloc[yId]]]) for yId in range(0, yCell_num) for xId in range(0, xCell_num)]
+          ROI_collection = ee.FeatureCollection(ROI_geomList)
+          # ------record the geolocation information
+          lon_min_tmp = np.concatenate([xloc for i in range(0, yCell_num)], axis=0)
+          lon_max_tmp = lon_min_tmp + dx
+          lat_max_tmp = np.concatenate([np.ones_like(xloc) * yloc[i] for i in range(0, yCell_num)], axis=0)
+          lat_min_tmp = lat_max_tmp - dy
+          # ------get the area of each ROI (in km2)
+          area_tmp = np.array([roi.area().getInfo() / 1000.0 / 1000.0 for roi in ROI_geomList])
+          # ------get the summed number of population with respect to each ROI
+          num_pop_feat = hrsl_pop_img.reduceRegions(collection=ROI_collection, reducer=ee.Reducer.sum(), scale=hrsl_scale_meters)
+          num_pop_feat = num_pop_feat.getInfo()["features"]
+          num_pop_tmp = np.array([dta["properties"]["sum"] for dta in num_pop_feat])
+          # ------calculate the population density with respect to each ROI
+          pop_density = num_pop_tmp / area_tmp
+
+          '''
+          if len(np.where(pop_density > 100)[0]) > 0:
+            geom_export = [Polygon([[xloc[xId], yloc[yId]], [xloc[xId]+dx, yloc[yId]], [xloc[xId]+dx, yloc[yId]-dy], [xloc[xId], yloc[yId]-dy], [xloc[xId], yloc[yId]]]) for yId in range(0, yCell_num) for xId in range(0, xCell_num)]
+            id_export = [yId * xCell_num + xId for yId in range(0, yCell_num) for xId in range(0, xCell_num)]
+            gdf_export = gpd.GeoDataFrame({"ROI_id": id_export, "geometry": geom_export})
+            gdf_export.crs = "EPSG:4326"
+            gdf_export.to_file("testSample/ROI.shp")
+
+            task_config = {"image": hrsl_pop_img.toFloat(),
+                    "description": "hrsl_tmp",
+                    "folder": "Global_export",
+                    "scale": 30,
+                    "maxPixels": 1e13,
+                    "crs": 'EPSG:4326'}
+            task = ee.batch.Export.image.toDrive(**task_config)
+            task.start()
+            print("catch")
+            catch_flag = True
+          '''
+          # ------store the information
+          lon_min_list.append(lon_min_tmp)
+          lon_max_list.append(lon_max_tmp)
+          lat_min_list.append(lat_min_tmp)
+          lat_max_list.append(lat_max_tmp)
+          area_list.append(area_tmp)
+          num_pop_list.append(num_pop_tmp)
+          pop_density_list.append(pop_density)
+        else:
+          print("[Empty intersection with HRSL layer] {0}".format(", ".join([str(xc_min), str(xc_max), str(yc_min), str(yc_max)])))
   
-  hrsl_df = pd.DataFrame({"lon_min": lon_min_list, "lon_max": lon_max_list, "lat_min": lat_min_list, "lat_max": lat_max_list, "area": area_list, "num_pop": num_pop_list, "pop_density": pop_density_list})
-  hrsl_df.to_csv("HRSL_info.csv", index=False)
-  
-  '''
-  task_config = {"image": hrsl_pop_img.toFloat(),
-                  "description": "hrsl_tmp",
-                  "folder": "Global_export",
-                  "scale": 30,
-                  "maxPixels": 1e13,
-                  "crs": 'EPSG:4326'}
-  task = ee.batch.Export.image.toDrive(**task_config)
-  
-  task.start()
-  '''
+  with h5py.File("HRSL_info.h5", "w") as hrsl_db:
+    hrsl_db.create_dataset("lon_min", data=np.concatenate(lon_min_list, axis=0))
+    hrsl_db.create_dataset("lon_max", data=np.concatenate(lon_max_list, axis=0))
+    hrsl_db.create_dataset("lat_min", data=np.concatenate(lat_min_list, axis=0))
+    hrsl_db.create_dataset("lat_max", data=np.concatenate(lat_max_list, axis=0))
+    hrsl_db.create_dataset("area", data=np.concatenate(area_list, axis=0))
+    hrsl_db.create_dataset("num_pop", data=np.concatenate(num_pop_list, axis=0))
+    hrsl_db.create_dataset("pop_density", data=np.concatenate(pop_density_list, axis=0))
+
+
+def selectROI_pop(pop_info_path: str, pop_density_min=100):
+  pop_db = h5py.File(pop_info_path, "r")
+
+  lon_min_dta = pop_db["lon_min"][()]
+  lon_max_dta = pop_db["lon_max"][()]
+  lat_min_dta = pop_db["lat_min"][()]
+  lat_max_dta = pop_db["lat_max"][()]
+
+  pop_density_dta = pop_db["pop_density"][()]
+  roi_loc = (pop_density_dta > pop_density_min)
+
+  lon_min_roi = np.reshape(lon_min_dta[roi_loc], newshape=(-1, 1))
+  lon_max_roi = np.reshape(lon_max_dta[roi_loc], newshape=(-1, 1))
+  lat_min_roi = np.reshape(lat_min_dta[roi_loc], newshape=(-1, 1))
+  lat_max_roi = np.reshape(lat_max_dta[roi_loc], newshape=(-1, 1))
+  extent_roi = np.concatenate([lon_min_roi, lon_max_roi, lat_min_roi, lat_max_roi], axis=1)
+
+  roi_geom = [Polygon([[ext[0], ext[3]], [ext[1], ext[3]], [ext[1], ext[2]], [ext[0], ext[2]], [ext[0], ext[3]]]) for ext in extent_roi]
+  roi_gdf = gpd.GeoDataFrame({"geometry": roi_geom, "ROI_id": np.arange(0, len(roi_geom))})
+  roi_gdf.to_file("testSample/ROI.shp")
 
 
 def mergeCollection_LightGBM(imgC: ee.ImageCollection):
@@ -505,4 +586,6 @@ if __name__ == "__main__":
   sentinel2cloudFree_download(sample_csv="GEE_Download_2022_back.csv", dst_dir="Sentinel-2_export_CF", path_prefix="/Volumes/ForLyy/Temp/ReferenceData", 
                                 padding=0.05, cloud_prob_threshold=30, dst="Drive")
   '''
-  getPopInfo(dx=0.09, dy=0.09)
+  # getPopInfo(dx=0.09, dy=0.09)
+
+  selectROI_pop(pop_info_path="HRSL_info.h5", pop_density_min=50)
