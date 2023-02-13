@@ -720,9 +720,10 @@ if __name__ == "__main__":
     '''
 
     # ---load pretrained weights from PyTorch
-    pretrained_weight = os.path.join("DL_run", "height", "check_pt_senet_100m", "checkpoint.pth.tar")
-    m = model_SEResNetAuxTF(target_resolution=100, trained_record=pretrained_weight, cuda_used=False, model_resaved=True, saved_path_tf="DL_run/height/check_pt_senet_100m_TF")
-
+    # pretrained_weight = os.path.join("DL_run", "height", "check_pt_senet_100m", "checkpoint.pth.tar")
+    pretrained_weight_tf = os.path.join("DL_run", "height", "check_pt_senet_100m_TF")
+    # m = model_SEResNetAuxTF(target_resolution=100, trained_record=pretrained_weight, cuda_used=False, model_resaved=True, saved_path_tf="DL_run/height/check_pt_senet_100m_TF")
+    m = tf.keras.models.load_model(pretrained_weight_tf)
     '''
     # ---check the trainable_variables in Tensorflow's implementation
     a_list = []
@@ -737,6 +738,6 @@ if __name__ == "__main__":
     '''
 
     # ---test whether the output of Tensorflow's implementation agrees with PyTorch's implementation
-    test_dta = tf.concat([tf.ones(shape=[1, 20, 20, 7])*i for i in range(0, 8)], axis=0)
+    test_dta = tf.concat([tf.ones(shape=[1, 20, 20, 7])*i*(-1.0) for i in range(0, 8)], axis=0)
     test_out = m(test_dta, training=False)
     print(test_out)

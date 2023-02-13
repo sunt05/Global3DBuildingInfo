@@ -237,18 +237,38 @@ def export_satData_GEE(lon_min: Union[int, float], lat_min: Union[int, float], l
     
     '''
     # ---------export the image where patches are sampled
-    test_image = ee.Image.cat([s1_img, s2_img_cloudFree, DEM_dta]).float()
-    img_task_config = {
-        "image": test_image,
-        "description": records_name,
+    s1_img_task_config = {
+        "image": s1_img.float(),
+        "description": "S1" + records_name,
         "folder": dst_dir,
         "scale": 10,
         "maxPixels": 1e13,
         "crs": "EPSG:4326"
     }
+    s1_img_task = ee.batch.Export.image.toDrive(**s1_img_task_config)
+    s1_img_task.start()
 
-    img_task = ee.batch.Export.image.toDrive(**img_task_config)
-    img_task.start()
+    s2_img_task_config = {
+        "image": s2_img_cloudFree.float(),
+        "description": "S2" + records_name,
+        "folder": dst_dir,
+        "scale": 10,
+        "maxPixels": 1e13,
+        "crs": "EPSG:4326"
+    }
+    s2_img_task = ee.batch.Export.image.toDrive(**s2_img_task_config)
+    s2_img_task.start()
+
+    nasaDEM_img_task_config = {
+        "image": DEM_dta.float(),
+        "description": "nasaDEM" + records_name,
+        "folder": dst_dir,
+        "scale": 30,
+        "maxPixels": 1e13,
+        "crs": "EPSG:4326"
+    }
+    nasaDEM_img_task = ee.batch.Export.image.toDrive(**nasaDEM_img_task_config)
+    nasaDEM_img_task.start()
     '''
     
     # ---------export the patched dataset into the format of TFRecord
@@ -297,19 +317,23 @@ def parseSatTFRecord(example_proto: tf.train.Example, target_resolution: int, pa
 
 
 def rgb_rescale_tf(dta: tf.Tensor, q1=0.98, q2=0.02, vmin=0.0, vmax=1.0):
-    val_min = tf.math.reduce_min(dta, axis=(0, 1))
+    vmin = vmin * 1.0
+    vmax = vmax * 1.0
+    val_min = tf.experimental.numpy.min(dta, axis=(0, 1))
     val_min = tf.expand_dims(tf.expand_dims(val_min, axis=0), axis=0)
 
-    val_high = tfp.stats.percentile(dta, q1 * 100, axis=(0, 1))
-    val_high = tf.expand_dims(tf.expand_dims(val_high, axis=0), axis=0)
-    val_low = tfp.stats.percentile(dta, q2 * 100, axis=(0, 1))
-    val_low = tf.expand_dims(tf.expand_dims(val_low, axis=0), axis=0)
+    val_high = tfp.stats.percentile(dta, q1 * 100, axis=[0, 1])
+    # val_high = tf.expand_dims(tf.expand_dims(val_high, axis=0), axis=0)
+    val_high = tf.reshape(val_high, shape=[1, 1, -1])
+    val_low = tfp.stats.percentile(dta, q2 * 100, axis=[0, 1])
+    # val_low = tf.expand_dims(tf.expand_dims(val_low, axis=0), axis=0)
+    val_low = tf.reshape(val_low, shape=[1, 1, -1])
     
     dta_rescale = (dta - val_min) * (vmax - vmin) / (val_high - val_low) + vmin
 
     dta_clipped = tf.clip_by_value(dta_rescale, vmin, vmax)
     # ------set NaN value to be vmin
-    # dta_clipped[~np.isfinite(dta_clipped)] = vmin
+    dta_clipped = tf.where(~tf.math.is_finite(dta_clipped), vmin, dta_clipped)
 
     return dta_clipped
 
@@ -327,8 +351,8 @@ def toTupleImage(feature_dict: Dict[str, tf.Tensor]):
     feat_stacked = tf.transpose(feat_stacked, [1, 2, 0])
 
     # ------the y-axis of exported patches should be flipped
-    # feat_sentinel = tf.experimental.numpy.flip(feat_stacked[:, :, :-1], axis=0)
-    feat_sentinel = feat_stacked[:, :, :-1]
+    feat_sentinel = tf.experimental.numpy.flip(feat_stacked[:, :, :-1], axis=0)
+    # feat_sentinel = feat_stacked[:, :, :-1]
     # ---------Note that for SHAFTS v202203, the required data type of input Sentinel's bands are UINT8 -> tf.float32.
     feat_s1 = tf.cast(tf.cast(get_backscatterCoef_tf(feat_stacked[:, :, 0:2]) * 255, tf.uint8), tf.float32) / 255.0
     feat_s2 = tf.cast(tf.cast(rgb_rescale_tf(feat_sentinel[:, :, 2:], vmin=0, vmax=255), tf.uint8), tf.float32) / 255.0
@@ -374,11 +398,11 @@ def GBuildingMap(lon_min: Union[int, float], lat_min: Union[int, float], lon_max
         file_suffix = "_".join([lon_min_str, lon_max_str, lat_min_str, lat_max_str])
     else:
         file_suffix = "_".join([str(lon_min), str(lon_max_str), str(lat_min_str), str(lat_max_str)])
-
+    
     export_satData_GEE(lon_min=lon_min, lat_min=lat_min, lat_max=lat_max, lon_max=lon_max, year=year, target_resolution=target_resolution,
                             dst_dir=DATA_FOLDER, destination="CloudStorage", file_prefix=file_prefix, padding=padding, patch_size_ratio=patch_size_ratio,
                             s2_cloud_prob_threshold=s2_cloud_prob_threshold, s2_cloud_prob_max=s2_cloud_prob_max)
-
+                            
     # ------prepare the TFRecords dataset on GC
     fullPath_list = [f.name for f in bucket_src.list_blobs(prefix=DATA_FOLDER)]
     record_list = ["gs://" + BUCKET + "/" + f for f in fullPath_list if f.endswith(".tfrecord.gz") if file_suffix in f]

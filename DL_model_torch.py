@@ -2,6 +2,7 @@ import os
 import math
 import torch.onnx
 from DL_module import *
+from test import *
 
 
 # ************************* Backbones *************************
@@ -1489,9 +1490,14 @@ if __name__ == "__main__":
     for name, param in m.state_dict().items():
         print(name)
     '''
-    test_dta = torch.concat([torch.ones(1, 6, 20, 20)*i*i for i in range(0, 8)], dim=0)
+    #test_dta = torch.concat([torch.ones(1, 6, 20, 20)*i*(-1.0) for i in range(0, 8)], dim=0)
 
-    test_aux = torch.concat([torch.ones(1, 1, 20, 20)*i*i for i in range(0, 8)], dim=0)
+    #test_aux = torch.concat([torch.ones(1, 1, 20, 20)*i*(-1.0) for i in range(0, 8)], dim=0)
+
+    dta = createInferDataset(["testSample/__0.0_0.9_51.20_51.29_H100W100.tfrecord.gz"], target_resolution=100)
+    test_dta = torch.Tensor(np.transpose(dta[:, :, :, :-1], (0, 3, 1, 2)))
+    test_aux = torch.Tensor(np.transpose(np.expand_dims(dta[:, :, :, -1], axis=-1), (0, 3, 1, 2)))
+    print(test_dta.shape)
 
     # test_out = m(test_dta)
     test_out = m(test_dta, test_aux)
