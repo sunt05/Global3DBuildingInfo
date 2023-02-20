@@ -63,10 +63,16 @@ def get_normalizedImage_EE(img: ee.Image, scale=10, q1=0.98, q2=0.02, vmin=0.0, 
 
 
 def getPopInfo(dx=0.09, dy=0.09, ratio=10, tol=0.2):
+  '''
   xMin = -8
   xMax = 1
   yMin = 49
   yMax = 58
+  '''
+  xMin = 0
+  xMax = 1.8
+  yMin = 50
+  yMax = 51.8
   # ------ref to: https://unstats.un.org/unsd/demographic/sconcerns/densurb/defintion_of%20urban.pdf
   # ------ref to: https://ourworldindata.org/urbanization
   hrsl_popC = ee.ImageCollection("projects/sat-io/open-datasets/hrsl/hrslpop")
@@ -122,13 +128,16 @@ def getPopInfo(dx=0.09, dy=0.09, ratio=10, tol=0.2):
           yCell_num = len(yloc)
           ROI_geomList = [ee.Geometry.Polygon([[xloc[xId], yloc[yId]], [xloc[xId]+dx, yloc[yId]], [xloc[xId]+dx, yloc[yId]-dy], [xloc[xId], yloc[yId]-dy], [xloc[xId], yloc[yId]]]) for yId in range(0, yCell_num) for xId in range(0, xCell_num)]
           ROI_collection = ee.FeatureCollection(ROI_geomList)
+          ROI_area = ROI_collection.map(lambda x: x.set({"area": x.geometry().area()}))
           # ------record the geolocation information
           lon_min_tmp = np.concatenate([xloc for i in range(0, yCell_num)], axis=0)
           lon_max_tmp = lon_min_tmp + dx
           lat_max_tmp = np.concatenate([np.ones_like(xloc) * yloc[i] for i in range(0, yCell_num)], axis=0)
           lat_min_tmp = lat_max_tmp - dy
           # ------get the area of each ROI (in km2)
-          area_tmp = np.array([roi.area().getInfo() / 1000.0 / 1000.0 for roi in ROI_geomList])
+          # area_tmp = np.array([roi.area().getInfo() / 1000.0 / 1000.0 for roi in ROI_geomList])
+          ROI_area = ROI_collection.map(lambda x: x.set({"area": x.geometry().area()}))
+          area_tmp = np.array([feat["properties"]["area"] / 1000.0 / 1000.0 for feat in ROI_area.getInfo()["features"]])
           # ------get the summed number of population with respect to each ROI
           num_pop_feat = hrsl_pop_img.reduceRegions(collection=ROI_collection, reducer=ee.Reducer.sum(), scale=hrsl_scale_meters)
           num_pop_feat = num_pop_feat.getInfo()["features"]
@@ -586,6 +595,6 @@ if __name__ == "__main__":
   sentinel2cloudFree_download(sample_csv="GEE_Download_2022_back.csv", dst_dir="Sentinel-2_export_CF", path_prefix="/Volumes/ForLyy/Temp/ReferenceData", 
                                 padding=0.05, cloud_prob_threshold=30, dst="Drive")
   '''
-  # getPopInfo(dx=0.09, dy=0.09)
+  getPopInfo(dx=0.09, dy=0.09)
 
-  selectROI_pop(pop_info_path="HRSL_info.h5", pop_density_min=50)
+  # selectROI_pop(pop_info_path="HRSL_info.h5", pop_density_min=50)
