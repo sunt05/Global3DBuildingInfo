@@ -9,7 +9,8 @@ from osgeo import gdal, ogr, osr
 import ee
 
 import geopandas as gpd
-from shapely.geometry import Polygon
+from pyproj import Proj
+from shapely.geometry import Polygon, shape
 
 
 ee.Initialize()
@@ -62,17 +63,7 @@ def get_normalizedImage_EE(img: ee.Image, scale=10, q1=0.98, q2=0.02, vmin=0.0, 
   return img_n
 
 
-def getPopInfo(dx=0.09, dy=0.09, ratio=10, tol=0.2):
-  '''
-  xMin = -8
-  xMax = 1
-  yMin = 49
-  yMax = 58
-  '''
-  xMin = 0
-  xMax = 1.8
-  yMin = 50
-  yMax = 51.8
+def getPopInfo(output_path, x_min, x_max, y_min, y_max, dx=0.09, dy=0.09, ratio=10, tol=0.2):
   # ------ref to: https://unstats.un.org/unsd/demographic/sconcerns/densurb/defintion_of%20urban.pdf
   # ------ref to: https://ourworldindata.org/urbanization
   hrsl_popC = ee.ImageCollection("projects/sat-io/open-datasets/hrsl/hrslpop")
@@ -92,8 +83,8 @@ def getPopInfo(dx=0.09, dy=0.09, ratio=10, tol=0.2):
   y_csize = dy * ratio
 
   #catch_flag = False
-  xcMin_ex = np.linspace(xMin, xMax, num=int(round((xMax - xMin) / x_csize, 0)), endpoint=False)
-  ycMin_ex = np.linspace(yMin, yMax, num=int(round((yMax - yMin) / y_csize, 0)), endpoint=False)
+  xcMin_ex = np.linspace(x_min, x_max, num=int(round((x_max - x_min) / x_csize, 0)), endpoint=False)
+  ycMin_ex = np.linspace(y_min, y_max, num=int(round((y_max - y_min) / y_csize, 0)), endpoint=False)
 
   for xc_min in xcMin_ex:
     xc_max = round(xc_min + x_csize, 7)     # ------round to 1 m
@@ -175,14 +166,131 @@ def getPopInfo(dx=0.09, dy=0.09, ratio=10, tol=0.2):
         else:
           print("[Empty intersection with HRSL layer] {0}".format(", ".join([str(xc_min), str(xc_max), str(yc_min), str(yc_max)])))
   
-  with h5py.File("HRSL_info.h5", "w") as hrsl_db:
-    hrsl_db.create_dataset("lon_min", data=np.concatenate(lon_min_list, axis=0))
-    hrsl_db.create_dataset("lon_max", data=np.concatenate(lon_max_list, axis=0))
-    hrsl_db.create_dataset("lat_min", data=np.concatenate(lat_min_list, axis=0))
-    hrsl_db.create_dataset("lat_max", data=np.concatenate(lat_max_list, axis=0))
-    hrsl_db.create_dataset("area", data=np.concatenate(area_list, axis=0))
-    hrsl_db.create_dataset("num_pop", data=np.concatenate(num_pop_list, axis=0))
-    hrsl_db.create_dataset("pop_density", data=np.concatenate(pop_density_list, axis=0))
+  if len(lon_min_list) > 0:
+    # with h5py.File("HRSL_info.h5", "w") as hrsl_db:
+    with h5py.File(output_path, "w") as hrsl_db:
+      hrsl_db.create_dataset("lon_min", data=np.concatenate(lon_min_list, axis=0))
+      hrsl_db.create_dataset("lon_max", data=np.concatenate(lon_max_list, axis=0))
+      hrsl_db.create_dataset("lat_min", data=np.concatenate(lat_min_list, axis=0))
+      hrsl_db.create_dataset("lat_max", data=np.concatenate(lat_max_list, axis=0))
+      hrsl_db.create_dataset("area", data=np.concatenate(area_list, axis=0))
+      hrsl_db.create_dataset("num_pop", data=np.concatenate(num_pop_list, axis=0))
+      hrsl_db.create_dataset("pop_density", data=np.concatenate(pop_density_list, axis=0))
+
+
+def getPopInfo_GPWv4(output_path, x_min, x_max, y_min, y_max, dx=0.09, dy=0.09, ratio=10):
+  # ------ref to: https://sedac.ciesin.columbia.edu/data/set/gpw-v4-population-density-adjusted-to-2015-unwpp-country-totals-rev11
+  # ------ref to: https://sedac.ciesin.columbia.edu/binaries/web/sedac/collections/gpw-v4/gpw-v4-documentation-rev11.pdf
+  gpw_ds = gdal.Open("gpw-v4-population-density-adjusted-to-2015-unwpp-country-totals-rev11_2020_30_sec_tif/gpw_v4_population_density_adjusted_to_2015_unwpp_country_totals_rev11_2020_30_sec.tif")
+  gpw_dta = gpw_ds.ReadAsArray() * 1.0
+  gpw_noData = gpw_ds.GetRasterBand(1).GetNoDataValue()
+  gpw_dta = np.where(gpw_dta == gpw_noData, 0.0, gpw_dta)
+  gpw_xMin, gpw_dx, _, gpw_yMax, _, gpw_dy = gpw_ds.GetGeoTransform()
+
+  lon_min_list = []
+  lon_max_list = []
+  lat_min_list = []
+  lat_max_list = []
+  area_list = []
+  num_pop_list = []
+  pop_density_list = []
+
+  x_csize = dx * ratio
+  y_csize = dy * ratio
+
+  #catch_flag = False
+  xcMin_ex = np.linspace(x_min, x_max, num=int(round((x_max - x_min) / x_csize, 0)), endpoint=False)
+  ycMin_ex = np.linspace(y_min, y_max, num=int(round((y_max - y_min) / y_csize, 0)), endpoint=False)
+
+  for xc_min in xcMin_ex:
+    xc_max = round(xc_min + x_csize, 7)     # ------round to 1 m
+    #if not catch_flag:
+    for yc_min in ycMin_ex:
+      #if not catch_flag:
+      yc_max = round(yc_min + y_csize, 7)   # ------round to 1 m      
+      # ------generate central points of each potential ROI
+      xloc = np.arange(xc_min, xc_max, dx)
+      xCell_num = len(xloc)
+      yloc = np.arange(yc_max, yc_min, -dy)
+      yCell_num = len(yloc)
+      
+      lon_min_tmp = []
+      lon_max_tmp = []
+      lat_min_tmp = []
+      lat_max_tmp = []
+      area_tmp = []
+      num_pop_tmp = []
+      pop_density = []
+      for xId in range(0, xCell_num):
+        for yId in range(0, yCell_num):
+          lon_min = xloc[xId]
+          lon_max = xloc[xId] + dx
+          lat_max = yloc[yId]
+          lat_min = yloc[yId] - dy
+          lon = [lon_min, lon_max, lon_max, lon_min]
+          lat = [lat_max, lat_max, lat_min, lat_min]
+          # ---------calculate the area of each potential ROI
+          # ------------ref to: https://stackoverflow.com/questions/4681737/how-to-calculate-the-area-of-a-polygon-on-the-earths-surface-using-python
+          pa = Proj("+proj=aea +lat_1={0} +lat_2={1} +lat_0={2} +lon_0={3}".format(lat_min, lat_max, 0.5 * (lat_min + lat_max), 0.5 * (lon_min + lon_max)))
+          x_cr, y_cr = pa(lon, lat)
+          cop = {"type": "Polygon", "coordinates": [zip(x_cr, y_cr)]}
+          area = shape(cop).area / 1000.0 / 1000.0
+          area_tmp.append(area)
+          # ---------calculate the population of each potential ROI
+          # ------------ref to: https://stackoverflow.com/questions/47404898/find-indices-of-raster-cells-that-intersect-with-a-polygon
+          x_start = np.floor((lon_min - gpw_xMin) / gpw_dx)
+          x_end = np.ceil((lon_max - gpw_xMin) / gpw_dx)
+          y_start = np.floor((lat_max - gpw_yMax) / gpw_dy)
+          y_end = np.ceil((lat_min - gpw_yMax) / gpw_dy)
+          num_pop = np.sum(gpw_dta[int(y_start):int(y_end), int(x_start):int(x_end)])
+          num_pop_tmp.append(num_pop)
+          # ---------calculate the average population density
+          pop_density.append(num_pop / area)
+          print(num_pop / area)
+
+          lon_min_tmp.append(lon_min)
+          lon_max_tmp.append(lon_max)
+          lat_min_tmp.append(lat_min)
+          lat_max_tmp.append(lat_max)
+
+      # ------store the information
+      lon_min_list.append(lon_min_tmp)
+      lon_max_list.append(lon_max_tmp)
+      lat_min_list.append(lat_min_tmp)
+      lat_max_list.append(lat_max_tmp)
+      area_list.append(area_tmp)
+      num_pop_list.append(num_pop_tmp)
+      pop_density_list.append(pop_density)
+  
+  if len(lon_min_list) > 0:
+    with h5py.File(output_path, "w") as hrsl_db:
+      hrsl_db.create_dataset("lon_min", data=np.concatenate(lon_min_list, axis=0))
+      hrsl_db.create_dataset("lon_max", data=np.concatenate(lon_max_list, axis=0))
+      hrsl_db.create_dataset("lat_min", data=np.concatenate(lat_min_list, axis=0))
+      hrsl_db.create_dataset("lat_max", data=np.concatenate(lat_max_list, axis=0))
+      hrsl_db.create_dataset("area", data=np.concatenate(area_list, axis=0))
+      hrsl_db.create_dataset("num_pop", data=np.concatenate(num_pop_list, axis=0))
+      hrsl_db.create_dataset("pop_density", data=np.concatenate(pop_density_list, axis=0))
+
+  
+def globalPopExport():
+  # xMin_batch = np.array([0, 45, -45, 90, -90, 135, -135, -180], dtype=np.int32)
+  xMin_batch = np.array([0, 18, -18, 36, -36, 54, -54, 72, -72, 90, -90, 108, -108, 126, -126, 144, -144, 162, -162, -180], dtype=np.int32)
+  xMax_batch = xMin_batch + 18
+  yMin_batch = np.array([0, 27, 54, -27, -54, -81], dtype=np.int32)
+  yMax_batch = np.array([27, 54, 81, 0, -27, -54], dtype=np.int32)
+
+  output_list = []
+  for idx in range(0, len(xMin_batch)):
+    xmin_b = xMin_batch[idx]
+    xmax_b = xMax_batch[idx]
+    for idy in range(0, len(yMin_batch)):
+      ymin_b = yMin_batch[idy]
+      ymax_b = yMax_batch[idy]
+      output_path = "HRSL_{0}_{1}_{2}_{3}.h5".format(xmin_b, xmax_b, ymin_b, ymax_b)
+      getPopInfo(output_path, xmin_b, xmax_b, ymin_b, ymax_b, dx=0.09, dy=0.09)
+      # getPopInfo_GPWv4(output_path, xmin_b, xmax_b, ymin_b, ymax_b, dx=0.09, dy=0.09)
+      print("*" * 20 + " " + output_path + " exported!!! " + "*" * 20)
 
 
 def selectROI_pop(pop_info_path: str, pop_density_min=100):
@@ -204,7 +312,7 @@ def selectROI_pop(pop_info_path: str, pop_density_min=100):
 
   roi_geom = [Polygon([[ext[0], ext[3]], [ext[1], ext[3]], [ext[1], ext[2]], [ext[0], ext[2]], [ext[0], ext[3]]]) for ext in extent_roi]
   roi_gdf = gpd.GeoDataFrame({"geometry": roi_geom, "ROI_id": np.arange(0, len(roi_geom))})
-  roi_gdf.to_file("testSample/ROI.shp")
+  roi_gdf.to_file("testSample/ROI_GPWv4.shp")
 
 
 def mergeCollection_LightGBM(imgC: ee.ImageCollection):
@@ -595,6 +703,9 @@ if __name__ == "__main__":
   sentinel2cloudFree_download(sample_csv="GEE_Download_2022_back.csv", dst_dir="Sentinel-2_export_CF", path_prefix="/Volumes/ForLyy/Temp/ReferenceData", 
                                 padding=0.05, cloud_prob_threshold=30, dst="Drive")
   '''
-  getPopInfo(dx=0.09, dy=0.09)
+  # getPopInfo(output_path="HRSL_info.h5", x_min=0, x_max=1.8, y_min=50, y_max=51.8, dx=0.09, dy=0.09)
+  # getPopInfo_GPWv4(output_path="HRSL_info_GPWv4.h5", x_min=0, x_max=1.8, y_min=50, y_max=51.8, dx=0.09, dy=0.09)
 
-  # selectROI_pop(pop_info_path="HRSL_info.h5", pop_density_min=50)
+  globalPopExport()
+
+  # selectROI_pop(pop_info_path="HRSL_info_GPWv4.h5", pop_density_min=300)

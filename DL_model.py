@@ -337,7 +337,7 @@ class BuildingNet_aux_tf(tf.keras.Model):
         if activation == "relu":
             self.activation = layers.ReLU()
         elif activation == "sigmoid":
-            self.activation = tf.keras.activations.sigmoid()
+            self.activation = layers.Activation(activation)
         else:
             raise NotImplementedError
 
@@ -370,95 +370,185 @@ class BuildingNet_aux_tf(tf.keras.Model):
             print([tensor.shape for tensor in l.get_weights()])
 
     def load_pretrained_model(self, trained_record):
-        print("Loading the model from: " + trained_record)
-        torch_state_dict = torch.load(trained_record, map_location=torch.device('cpu'))["state_dict"]
-        # ------initialize fc layer
-        tf_fc = self.get_layer("fc")
-        weights = torch_state_dict["fc.weight"].numpy()
-        bias = torch_state_dict["fc.bias"].numpy()
-        tf_fc.set_weights([weights.transpose((1, 0)), bias])
-        # ------initialize bn_out layer
-        tf_bn_out = self.get_layer("bn_out")
-        gamma = torch_state_dict["bn_out.weight"].numpy()
-        beta = torch_state_dict["bn_out.bias"].numpy()
-        mean = torch_state_dict["bn_out.running_mean"].numpy()
-        var = torch_state_dict["bn_out.running_var"].numpy()
-        tf_bn_out.set_weights([gamma, beta, mean, var])
-        # ------initialize fc_out layer
-        tf_fc_out = self.get_layer("fc_out")
-        weights = torch_state_dict["fc_out.weight"].numpy()
-        bias = torch_state_dict["fc_out.bias"].numpy()
-        tf_fc_out.set_weights([weights.transpose((1, 0)), bias])
-        # ------initialize backbone layer
-        for bkbone in ["features", "aux_features"]:
-            tf_backbone = self.get_layer(bkbone)
-            # ---------[1] initialize the initial convolutional layer in the backbone layer
-            tf_conv1 = tf_backbone.conv1
-            weights = torch_state_dict[tf_conv1.name + ".weight"].numpy()
-            weights = weights.transpose((2, 3, 1, 0))
-            tf_conv1.set_weights([weights])
-            # ---------[2] initialize the initial BatchNormalization layer in the backbone layer
-            tf_bn1 = tf_backbone.bn1
-            gamma = torch_state_dict[tf_bn1.name + ".weight"].numpy()
-            beta = torch_state_dict[tf_bn1.name + ".bias"].numpy()
-            mean = torch_state_dict[tf_bn1.name + ".running_mean"].numpy()
-            var = torch_state_dict[tf_bn1.name + ".running_var"].numpy()
-            tf_bn1.set_weights([gamma, beta, mean, var])
-            # ---------[3] initialize the ResLayer in the backbone layer
-            tf_res_layer = tf_backbone.res_layer
-            # ---------------iteration over multiple res_layers
-            for seq_layer in tf_res_layer.layers:
-                # ------------------iteration over multiple res_blocks in one res_layer
-                for res_block in seq_layer.layers:
-                    # ---------------------iteration over components in one res_block
-                    # ------------------------conv1
-                    base_conv1 = res_block.conv1
-                    weights = torch_state_dict[base_conv1.name + ".weight"].numpy()
-                    weights = weights.transpose((2, 3, 1, 0))
-                    base_conv1.set_weights([weights])
-                    # ------------------------bn1
-                    base_bn1 = res_block.bn1
-                    gamma = torch_state_dict[base_bn1.name + ".weight"].numpy()
-                    beta = torch_state_dict[base_bn1.name + ".bias"].numpy()
-                    mean = torch_state_dict[base_bn1.name + ".running_mean"].numpy()
-                    var = torch_state_dict[base_bn1.name + ".running_var"].numpy()
-                    base_bn1.set_weights([gamma, beta, mean, var])
-                    # ------------------------conv2
-                    base_conv2 = res_block.conv2
-                    weights = torch_state_dict[base_conv2.name + ".weight"].numpy()
-                    weights = weights.transpose((2, 3, 1, 0))
-                    base_conv2.set_weights([weights])
-                    # ------------------------bn2
-                    base_bn2 = res_block.bn2
-                    gamma = torch_state_dict[base_bn2.name + ".weight"].numpy()
-                    beta = torch_state_dict[base_bn2.name + ".bias"].numpy()
-                    mean = torch_state_dict[base_bn2.name + ".running_mean"].numpy()
-                    var = torch_state_dict[base_bn2.name + ".running_var"].numpy()
-                    base_bn2.set_weights([gamma, beta, mean, var])
-                    # ------------------------downsample
-                    if res_block.downsample is not None:
-                        base_downsample = res_block.downsample
-                        for l in base_downsample.layers:
-                            if "downsample.0" in l.name:
-                                base_conv = base_downsample.get_layer(l.name)
-                                weights = torch_state_dict[l.name + ".weight"].numpy()
-                                weights = weights.transpose((2, 3, 1, 0))
-                                base_conv.set_weights([weights])
-                            elif "downsample.1" in l.name:
-                                base_bn = base_downsample.get_layer(l.name)
-                                gamma = torch_state_dict[l.name + ".weight"].numpy()
-                                beta = torch_state_dict[l.name + ".bias"].numpy()
-                                mean = torch_state_dict[l.name + ".running_mean"].numpy()
-                                var = torch_state_dict[l.name + ".running_var"].numpy()
-                                base_bn.set_weights([gamma, beta, mean, var])
-                    # ------------------------SEfc
-                    if hasattr(res_block, "SEfc"):
-                        base_sefc = res_block.SEfc
-                        for l in base_sefc.layers:
-                            if "fc" in l.name:
-                                base_fc = base_sefc.get_layer(l.name)
-                                weights = torch_state_dict[l.name + ".weight"].numpy()
-                                base_fc.set_weights([weights.transpose((1, 0))])
+        print("Loading the PyTorch model from: " + trained_record)
+        if self.cuda_used:
+            torch_state_dict = torch.load(trained_record)["state_dict"]
+            # ------initialize fc layer
+            tf_fc = self.get_layer("fc")
+            weights = torch_state_dict["fc.weight"].cpu().numpy()
+            bias = torch_state_dict["fc.bias"].cpu().numpy()
+            tf_fc.set_weights([weights.transpose((1, 0)), bias])
+            # ------initialize bn_out layer
+            tf_bn_out = self.get_layer("bn_out")
+            gamma = torch_state_dict["bn_out.weight"].cpu().numpy()
+            beta = torch_state_dict["bn_out.bias"].cpu().numpy()
+            mean = torch_state_dict["bn_out.running_mean"].cpu().numpy()
+            var = torch_state_dict["bn_out.running_var"].cpu().numpy()
+            tf_bn_out.set_weights([gamma, beta, mean, var])
+            # ------initialize fc_out layer
+            tf_fc_out = self.get_layer("fc_out")
+            weights = torch_state_dict["fc_out.weight"].cpu().numpy()
+            bias = torch_state_dict["fc_out.bias"].cpu().numpy()
+            tf_fc_out.set_weights([weights.transpose((1, 0)), bias])
+            # ------initialize backbone layer
+            for bkbone in ["features", "aux_features"]:
+                tf_backbone = self.get_layer(bkbone)
+                # ---------[1] initialize the initial convolutional layer in the backbone layer
+                tf_conv1 = tf_backbone.conv1
+                weights = torch_state_dict[tf_conv1.name + ".weight"].cpu().numpy()
+                weights = weights.transpose((2, 3, 1, 0))
+                tf_conv1.set_weights([weights])
+                # ---------[2] initialize the initial BatchNormalization layer in the backbone layer
+                tf_bn1 = tf_backbone.bn1
+                gamma = torch_state_dict[tf_bn1.name + ".weight"].cpu().numpy()
+                beta = torch_state_dict[tf_bn1.name + ".bias"].cpu().numpy()
+                mean = torch_state_dict[tf_bn1.name + ".running_mean"].cpu().numpy()
+                var = torch_state_dict[tf_bn1.name + ".running_var"].cpu().numpy()
+                tf_bn1.set_weights([gamma, beta, mean, var])
+                # ---------[3] initialize the ResLayer in the backbone layer
+                tf_res_layer = tf_backbone.res_layer
+                # ---------------iteration over multiple res_layers
+                for seq_layer in tf_res_layer.layers:
+                    # ------------------iteration over multiple res_blocks in one res_layer
+                    for res_block in seq_layer.layers:
+                        # ---------------------iteration over components in one res_block
+                        # ------------------------conv1
+                        base_conv1 = res_block.conv1
+                        weights = torch_state_dict[base_conv1.name + ".weight"].cpu().numpy()
+                        weights = weights.transpose((2, 3, 1, 0))
+                        base_conv1.set_weights([weights])
+                        # ------------------------bn1
+                        base_bn1 = res_block.bn1
+                        gamma = torch_state_dict[base_bn1.name + ".weight"].cpu().numpy()
+                        beta = torch_state_dict[base_bn1.name + ".bias"].cpu().numpy()
+                        mean = torch_state_dict[base_bn1.name + ".running_mean"].cpu().numpy()
+                        var = torch_state_dict[base_bn1.name + ".running_var"].cpu().numpy()
+                        base_bn1.set_weights([gamma, beta, mean, var])
+                        # ------------------------conv2
+                        base_conv2 = res_block.conv2
+                        weights = torch_state_dict[base_conv2.name + ".weight"].cpu().numpy()
+                        weights = weights.transpose((2, 3, 1, 0))
+                        base_conv2.set_weights([weights])
+                        # ------------------------bn2
+                        base_bn2 = res_block.bn2
+                        gamma = torch_state_dict[base_bn2.name + ".weight"].cpu().numpy()
+                        beta = torch_state_dict[base_bn2.name + ".bias"].cpu().numpy()
+                        mean = torch_state_dict[base_bn2.name + ".running_mean"].cpu().numpy()
+                        var = torch_state_dict[base_bn2.name + ".running_var"].cpu().numpy()
+                        base_bn2.set_weights([gamma, beta, mean, var])
+                        # ------------------------downsample
+                        if res_block.downsample is not None:
+                            base_downsample = res_block.downsample
+                            for l in base_downsample.layers:
+                                if "downsample.0" in l.name:
+                                    base_conv = base_downsample.get_layer(l.name)
+                                    weights = torch_state_dict[l.name + ".weight"].cpu().numpy()
+                                    weights = weights.transpose((2, 3, 1, 0))
+                                    base_conv.set_weights([weights])
+                                elif "downsample.1" in l.name:
+                                    base_bn = base_downsample.get_layer(l.name)
+                                    gamma = torch_state_dict[l.name + ".weight"].cpu().numpy()
+                                    beta = torch_state_dict[l.name + ".bias"].cpu().numpy()
+                                    mean = torch_state_dict[l.name + ".running_mean"].cpu().numpy()
+                                    var = torch_state_dict[l.name + ".running_var"].cpu().numpy()
+                                    base_bn.set_weights([gamma, beta, mean, var])
+                        # ------------------------SEfc
+                        if hasattr(res_block, "SEfc"):
+                            base_sefc = res_block.SEfc
+                            for l in base_sefc.layers:
+                                if "fc" in l.name:
+                                    base_fc = base_sefc.get_layer(l.name)
+                                    weights = torch_state_dict[l.name + ".weight"].cpu().numpy()
+                                    base_fc.set_weights([weights.transpose((1, 0))])
+        else:
+            torch_state_dict = torch.load(trained_record, map_location=torch.device('cpu'))["state_dict"]
+            # ------initialize fc layer
+            tf_fc = self.get_layer("fc")
+            weights = torch_state_dict["fc.weight"].numpy()
+            bias = torch_state_dict["fc.bias"].numpy()
+            tf_fc.set_weights([weights.transpose((1, 0)), bias])
+            # ------initialize bn_out layer
+            tf_bn_out = self.get_layer("bn_out")
+            gamma = torch_state_dict["bn_out.weight"].numpy()
+            beta = torch_state_dict["bn_out.bias"].numpy()
+            mean = torch_state_dict["bn_out.running_mean"].numpy()
+            var = torch_state_dict["bn_out.running_var"].numpy()
+            tf_bn_out.set_weights([gamma, beta, mean, var])
+            # ------initialize fc_out layer
+            tf_fc_out = self.get_layer("fc_out")
+            weights = torch_state_dict["fc_out.weight"].numpy()
+            bias = torch_state_dict["fc_out.bias"].numpy()
+            tf_fc_out.set_weights([weights.transpose((1, 0)), bias])
+            # ------initialize backbone layer
+            for bkbone in ["features", "aux_features"]:
+                tf_backbone = self.get_layer(bkbone)
+                # ---------[1] initialize the initial convolutional layer in the backbone layer
+                tf_conv1 = tf_backbone.conv1
+                weights = torch_state_dict[tf_conv1.name + ".weight"].numpy()
+                weights = weights.transpose((2, 3, 1, 0))
+                tf_conv1.set_weights([weights])
+                # ---------[2] initialize the initial BatchNormalization layer in the backbone layer
+                tf_bn1 = tf_backbone.bn1
+                gamma = torch_state_dict[tf_bn1.name + ".weight"].numpy()
+                beta = torch_state_dict[tf_bn1.name + ".bias"].numpy()
+                mean = torch_state_dict[tf_bn1.name + ".running_mean"].numpy()
+                var = torch_state_dict[tf_bn1.name + ".running_var"].numpy()
+                tf_bn1.set_weights([gamma, beta, mean, var])
+                # ---------[3] initialize the ResLayer in the backbone layer
+                tf_res_layer = tf_backbone.res_layer
+                # ---------------iteration over multiple res_layers
+                for seq_layer in tf_res_layer.layers:
+                    # ------------------iteration over multiple res_blocks in one res_layer
+                    for res_block in seq_layer.layers:
+                        # ---------------------iteration over components in one res_block
+                        # ------------------------conv1
+                        base_conv1 = res_block.conv1
+                        weights = torch_state_dict[base_conv1.name + ".weight"].numpy()
+                        weights = weights.transpose((2, 3, 1, 0))
+                        base_conv1.set_weights([weights])
+                        # ------------------------bn1
+                        base_bn1 = res_block.bn1
+                        gamma = torch_state_dict[base_bn1.name + ".weight"].numpy()
+                        beta = torch_state_dict[base_bn1.name + ".bias"].numpy()
+                        mean = torch_state_dict[base_bn1.name + ".running_mean"].numpy()
+                        var = torch_state_dict[base_bn1.name + ".running_var"].numpy()
+                        base_bn1.set_weights([gamma, beta, mean, var])
+                        # ------------------------conv2
+                        base_conv2 = res_block.conv2
+                        weights = torch_state_dict[base_conv2.name + ".weight"].numpy()
+                        weights = weights.transpose((2, 3, 1, 0))
+                        base_conv2.set_weights([weights])
+                        # ------------------------bn2
+                        base_bn2 = res_block.bn2
+                        gamma = torch_state_dict[base_bn2.name + ".weight"].numpy()
+                        beta = torch_state_dict[base_bn2.name + ".bias"].numpy()
+                        mean = torch_state_dict[base_bn2.name + ".running_mean"].numpy()
+                        var = torch_state_dict[base_bn2.name + ".running_var"].numpy()
+                        base_bn2.set_weights([gamma, beta, mean, var])
+                        # ------------------------downsample
+                        if res_block.downsample is not None:
+                            base_downsample = res_block.downsample
+                            for l in base_downsample.layers:
+                                if "downsample.0" in l.name:
+                                    base_conv = base_downsample.get_layer(l.name)
+                                    weights = torch_state_dict[l.name + ".weight"].numpy()
+                                    weights = weights.transpose((2, 3, 1, 0))
+                                    base_conv.set_weights([weights])
+                                elif "downsample.1" in l.name:
+                                    base_bn = base_downsample.get_layer(l.name)
+                                    gamma = torch_state_dict[l.name + ".weight"].numpy()
+                                    beta = torch_state_dict[l.name + ".bias"].numpy()
+                                    mean = torch_state_dict[l.name + ".running_mean"].numpy()
+                                    var = torch_state_dict[l.name + ".running_var"].numpy()
+                                    base_bn.set_weights([gamma, beta, mean, var])
+                        # ------------------------SEfc
+                        if hasattr(res_block, "SEfc"):
+                            base_sefc = res_block.SEfc
+                            for l in base_sefc.layers:
+                                if "fc" in l.name:
+                                    base_fc = base_sefc.get_layer(l.name)
+                                    weights = torch_state_dict[l.name + ".weight"].numpy()
+                                    base_fc.set_weights([weights.transpose((1, 0))])
 
 
 class BuildingNetMTL_aux_tf(tf.keras.Model):
@@ -542,95 +632,187 @@ class BuildingNetMTL_aux_tf(tf.keras.Model):
             print([tensor.shape for tensor in l.get_weights()])
 
     def load_pretrained_model(self, trained_record, mode="torch"):
-        torch_state_dict = torch.load(trained_record, map_location=torch.device('cpu'))["state_dict"]
-        for var in ["height", "footprint"]:
-            # ------initialize fc layer
-            tf_fc = self.get_layer("fc_{0}".format(var))
-            weights = torch_state_dict["fc_{0}.weight".format(var)].numpy()
-            bias = torch_state_dict["fc_{0}.bias".format(var)].numpy()
-            tf_fc.set_weights([weights.transpose((1, 0)), bias])
-            # ------initialize bn_out layer
-            tf_bn_out = self.get_layer("bn_out_{0}".format(var))
-            gamma = torch_state_dict["bn_out_{0}.weight".format(var)].numpy()
-            beta = torch_state_dict["bn_out_{0}.bias".format(var)].numpy()
-            mean = torch_state_dict["bn_out_{0}.running_mean".format(var)].numpy()
-            var = torch_state_dict["bn_out_{0}.running_var".format(var)].numpy()
-            tf_bn_out.set_weights([gamma, beta, mean, var])
-            # ------initialize fc_out layer
-            tf_fc_out = self.get_layer("fc_out_{0}".format(var))
-            weights = torch_state_dict["fc_out_{0}.weight".format(var)].numpy()
-            bias = torch_state_dict["fc_out_{0}.bias".format(var)].numpy()
-            tf_fc_out.set_weights([weights.transpose((1, 0)), bias])
-        # ------initialize backbone layer
-        for bkbone in ["features", "aux_features"]:
-            tf_backbone = self.get_layer(bkbone)
-            # ---------[1] initialize the initial convolutional layer in the backbone layer
-            tf_conv1 = tf_backbone.conv1
-            weights = torch_state_dict[tf_conv1.name + ".weight"].numpy()
-            weights = weights.transpose((2, 3, 1, 0))
-            tf_conv1.set_weights([weights])
-            # ---------[2] initialize the initial BatchNormalization layer in the backbone layer
-            tf_bn1 = tf_backbone.bn1
-            gamma = torch_state_dict[tf_bn1.name + ".weight"].numpy()
-            beta = torch_state_dict[tf_bn1.name + ".bias"].numpy()
-            mean = torch_state_dict[tf_bn1.name + ".running_mean"].numpy()
-            var = torch_state_dict[tf_bn1.name + ".running_var"].numpy()
-            tf_bn1.set_weights([gamma, beta, mean, var])
-            # ---------[3] initialize the ResLayer in the backbone layer
-            tf_res_layer = tf_backbone.res_layer
-            # ---------------iteration over multiple res_layers
-            for seq_layer in tf_res_layer.layers:
-                # ------------------iteration over multiple res_blocks in one res_layer
-                for res_block in seq_layer.layers:
-                    # ---------------------iteration over components in one res_block
-                    # ------------------------conv1
-                    base_conv1 = res_block.conv1
-                    weights = torch_state_dict[base_conv1.name + ".weight"].numpy()
-                    weights = weights.transpose((2, 3, 1, 0))
-                    base_conv1.set_weights([weights])
-                    # ------------------------bn1
-                    base_bn1 = res_block.bn1
-                    gamma = torch_state_dict[base_bn1.name + ".weight"].numpy()
-                    beta = torch_state_dict[base_bn1.name + ".bias"].numpy()
-                    mean = torch_state_dict[base_bn1.name + ".running_mean"].numpy()
-                    var = torch_state_dict[base_bn1.name + ".running_var"].numpy()
-                    base_bn1.set_weights([gamma, beta, mean, var])
-                    # ------------------------conv2
-                    base_conv2 = res_block.conv2
-                    weights = torch_state_dict[base_conv2.name + ".weight"].numpy()
-                    weights = weights.transpose((2, 3, 1, 0))
-                    base_conv2.set_weights([weights])
-                    # ------------------------bn2
-                    base_bn2 = res_block.bn2
-                    gamma = torch_state_dict[base_bn2.name + ".weight"].numpy()
-                    beta = torch_state_dict[base_bn2.name + ".bias"].numpy()
-                    mean = torch_state_dict[base_bn2.name + ".running_mean"].numpy()
-                    var = torch_state_dict[base_bn2.name + ".running_var"].numpy()
-                    base_bn2.set_weights([gamma, beta, mean, var])
-                    # ------------------------downsample
-                    if res_block.downsample is not None:
-                        base_downsample = res_block.downsample
-                        for l in base_downsample.layers:
-                            if "downsample.0" in l.name:
-                                base_conv = base_downsample.get_layer(l.name)
-                                weights = torch_state_dict[l.name + ".weight"].numpy()
-                                weights = weights.transpose((2, 3, 1, 0))
-                                base_conv.set_weights([weights])
-                            elif "downsample.1" in l.name:
-                                base_bn = base_downsample.get_layer(l.name)
-                                gamma = torch_state_dict[l.name + ".weight"].numpy()
-                                beta = torch_state_dict[l.name + ".bias"].numpy()
-                                mean = torch_state_dict[l.name + ".running_mean"].numpy()
-                                var = torch_state_dict[l.name + ".running_var"].numpy()
-                                base_bn.set_weights([gamma, beta, mean, var])
-                    # ------------------------SEfc
-                    if hasattr(res_block, "SEfc"):
-                        base_sefc = res_block.SEfc
-                        for l in base_sefc.layers:
-                            if "fc" in l.name:
-                                base_fc = base_sefc.get_layer(l.name)
-                                weights = torch_state_dict[l.name + ".weight"].numpy()
-                                base_fc.set_weights([weights.transpose((1, 0))])
+        if self.cuda_used:
+            torch_state_dict = torch.load(trained_record)["state_dict"]
+            for var in ["height", "footprint"]:
+                # ------initialize fc layer
+                tf_fc = self.get_layer("fc_{0}".format(var))
+                weights = torch_state_dict["fc_{0}.weight".format(var)].cpu().numpy()
+                bias = torch_state_dict["fc_{0}.bias".format(var)].cpu().numpy()
+                tf_fc.set_weights([weights.transpose((1, 0)), bias])
+                # ------initialize bn_out layer
+                tf_bn_out = self.get_layer("bn_out_{0}".format(var))
+                gamma = torch_state_dict["bn_out_{0}.weight".format(var)].cpu().numpy()
+                beta = torch_state_dict["bn_out_{0}.bias".format(var)].cpu().numpy()
+                mean = torch_state_dict["bn_out_{0}.running_mean".format(var)].cpu().numpy()
+                var = torch_state_dict["bn_out_{0}.running_var".format(var)].cpu().numpy()
+                tf_bn_out.set_weights([gamma, beta, mean, var])
+                # ------initialize fc_out layer
+                tf_fc_out = self.get_layer("fc_out_{0}".format(var))
+                weights = torch_state_dict["fc_out_{0}.weight".format(var)].cpu().numpy()
+                bias = torch_state_dict["fc_out_{0}.bias".format(var)].cpu().numpy()
+                tf_fc_out.set_weights([weights.transpose((1, 0)), bias])
+            # ------initialize backbone layer
+            for bkbone in ["features", "aux_features"]:
+                tf_backbone = self.get_layer(bkbone)
+                # ---------[1] initialize the initial convolutional layer in the backbone layer
+                tf_conv1 = tf_backbone.conv1
+                weights = torch_state_dict[tf_conv1.name + ".weight"].cpu().numpy()
+                weights = weights.transpose((2, 3, 1, 0))
+                tf_conv1.set_weights([weights])
+                # ---------[2] initialize the initial BatchNormalization layer in the backbone layer
+                tf_bn1 = tf_backbone.bn1
+                gamma = torch_state_dict[tf_bn1.name + ".weight"].cpu().numpy()
+                beta = torch_state_dict[tf_bn1.name + ".bias"].cpu().numpy()
+                mean = torch_state_dict[tf_bn1.name + ".running_mean"].cpu().numpy()
+                var = torch_state_dict[tf_bn1.name + ".running_var"].cpu().numpy()
+                tf_bn1.set_weights([gamma, beta, mean, var])
+                # ---------[3] initialize the ResLayer in the backbone layer
+                tf_res_layer = tf_backbone.res_layer
+                # ---------------iteration over multiple res_layers
+                for seq_layer in tf_res_layer.layers:
+                    # ------------------iteration over multiple res_blocks in one res_layer
+                    for res_block in seq_layer.layers:
+                        # ---------------------iteration over components in one res_block
+                        # ------------------------conv1
+                        base_conv1 = res_block.conv1
+                        weights = torch_state_dict[base_conv1.name + ".weight"].cpu().numpy()
+                        weights = weights.transpose((2, 3, 1, 0))
+                        base_conv1.set_weights([weights])
+                        # ------------------------bn1
+                        base_bn1 = res_block.bn1
+                        gamma = torch_state_dict[base_bn1.name + ".weight"].cpu().numpy()
+                        beta = torch_state_dict[base_bn1.name + ".bias"].cpu().numpy()
+                        mean = torch_state_dict[base_bn1.name + ".running_mean"].cpu().numpy()
+                        var = torch_state_dict[base_bn1.name + ".running_var"].cpu().numpy()
+                        base_bn1.set_weights([gamma, beta, mean, var])
+                        # ------------------------conv2
+                        base_conv2 = res_block.conv2
+                        weights = torch_state_dict[base_conv2.name + ".weight"].cpu().numpy()
+                        weights = weights.transpose((2, 3, 1, 0))
+                        base_conv2.set_weights([weights])
+                        # ------------------------bn2
+                        base_bn2 = res_block.bn2
+                        gamma = torch_state_dict[base_bn2.name + ".weight"].cpu().numpy()
+                        beta = torch_state_dict[base_bn2.name + ".bias"].cpu().numpy()
+                        mean = torch_state_dict[base_bn2.name + ".running_mean"].cpu().numpy()
+                        var = torch_state_dict[base_bn2.name + ".running_var"].cpu().numpy()
+                        base_bn2.set_weights([gamma, beta, mean, var])
+                        # ------------------------downsample
+                        if res_block.downsample is not None:
+                            base_downsample = res_block.downsample
+                            for l in base_downsample.layers:
+                                if "downsample.0" in l.name:
+                                    base_conv = base_downsample.get_layer(l.name)
+                                    weights = torch_state_dict[l.name + ".weight"].cpu().numpy()
+                                    weights = weights.transpose((2, 3, 1, 0))
+                                    base_conv.set_weights([weights])
+                                elif "downsample.1" in l.name:
+                                    base_bn = base_downsample.get_layer(l.name)
+                                    gamma = torch_state_dict[l.name + ".weight"].cpu().numpy()
+                                    beta = torch_state_dict[l.name + ".bias"].cpu().numpy()
+                                    mean = torch_state_dict[l.name + ".running_mean"].cpu().numpy()
+                                    var = torch_state_dict[l.name + ".running_var"].cpu().numpy()
+                                    base_bn.set_weights([gamma, beta, mean, var])
+                        # ------------------------SEfc
+                        if hasattr(res_block, "SEfc"):
+                            base_sefc = res_block.SEfc
+                            for l in base_sefc.layers:
+                                if "fc" in l.name:
+                                    base_fc = base_sefc.get_layer(l.name)
+                                    weights = torch_state_dict[l.name + ".weight"].cpu().numpy()
+                                    base_fc.set_weights([weights.transpose((1, 0))])
+        else:
+            torch_state_dict = torch.load(trained_record, map_location=torch.device('cpu'))["state_dict"]
+            for var in ["height", "footprint"]:
+                # ------initialize fc layer
+                tf_fc = self.get_layer("fc_{0}".format(var))
+                weights = torch_state_dict["fc_{0}.weight".format(var)].numpy()
+                bias = torch_state_dict["fc_{0}.bias".format(var)].numpy()
+                tf_fc.set_weights([weights.transpose((1, 0)), bias])
+                # ------initialize bn_out layer
+                tf_bn_out = self.get_layer("bn_out_{0}".format(var))
+                gamma = torch_state_dict["bn_out_{0}.weight".format(var)].numpy()
+                beta = torch_state_dict["bn_out_{0}.bias".format(var)].numpy()
+                mean = torch_state_dict["bn_out_{0}.running_mean".format(var)].numpy()
+                var = torch_state_dict["bn_out_{0}.running_var".format(var)].numpy()
+                tf_bn_out.set_weights([gamma, beta, mean, var])
+                # ------initialize fc_out layer
+                tf_fc_out = self.get_layer("fc_out_{0}".format(var))
+                weights = torch_state_dict["fc_out_{0}.weight".format(var)].numpy()
+                bias = torch_state_dict["fc_out_{0}.bias".format(var)].numpy()
+                tf_fc_out.set_weights([weights.transpose((1, 0)), bias])
+            # ------initialize backbone layer
+            for bkbone in ["features", "aux_features"]:
+                tf_backbone = self.get_layer(bkbone)
+                # ---------[1] initialize the initial convolutional layer in the backbone layer
+                tf_conv1 = tf_backbone.conv1
+                weights = torch_state_dict[tf_conv1.name + ".weight"].numpy()
+                weights = weights.transpose((2, 3, 1, 0))
+                tf_conv1.set_weights([weights])
+                # ---------[2] initialize the initial BatchNormalization layer in the backbone layer
+                tf_bn1 = tf_backbone.bn1
+                gamma = torch_state_dict[tf_bn1.name + ".weight"].numpy()
+                beta = torch_state_dict[tf_bn1.name + ".bias"].numpy()
+                mean = torch_state_dict[tf_bn1.name + ".running_mean"].numpy()
+                var = torch_state_dict[tf_bn1.name + ".running_var"].numpy()
+                tf_bn1.set_weights([gamma, beta, mean, var])
+                # ---------[3] initialize the ResLayer in the backbone layer
+                tf_res_layer = tf_backbone.res_layer
+                # ---------------iteration over multiple res_layers
+                for seq_layer in tf_res_layer.layers:
+                    # ------------------iteration over multiple res_blocks in one res_layer
+                    for res_block in seq_layer.layers:
+                        # ---------------------iteration over components in one res_block
+                        # ------------------------conv1
+                        base_conv1 = res_block.conv1
+                        weights = torch_state_dict[base_conv1.name + ".weight"].numpy()
+                        weights = weights.transpose((2, 3, 1, 0))
+                        base_conv1.set_weights([weights])
+                        # ------------------------bn1
+                        base_bn1 = res_block.bn1
+                        gamma = torch_state_dict[base_bn1.name + ".weight"].numpy()
+                        beta = torch_state_dict[base_bn1.name + ".bias"].numpy()
+                        mean = torch_state_dict[base_bn1.name + ".running_mean"].numpy()
+                        var = torch_state_dict[base_bn1.name + ".running_var"].numpy()
+                        base_bn1.set_weights([gamma, beta, mean, var])
+                        # ------------------------conv2
+                        base_conv2 = res_block.conv2
+                        weights = torch_state_dict[base_conv2.name + ".weight"].numpy()
+                        weights = weights.transpose((2, 3, 1, 0))
+                        base_conv2.set_weights([weights])
+                        # ------------------------bn2
+                        base_bn2 = res_block.bn2
+                        gamma = torch_state_dict[base_bn2.name + ".weight"].numpy()
+                        beta = torch_state_dict[base_bn2.name + ".bias"].numpy()
+                        mean = torch_state_dict[base_bn2.name + ".running_mean"].numpy()
+                        var = torch_state_dict[base_bn2.name + ".running_var"].numpy()
+                        base_bn2.set_weights([gamma, beta, mean, var])
+                        # ------------------------downsample
+                        if res_block.downsample is not None:
+                            base_downsample = res_block.downsample
+                            for l in base_downsample.layers:
+                                if "downsample.0" in l.name:
+                                    base_conv = base_downsample.get_layer(l.name)
+                                    weights = torch_state_dict[l.name + ".weight"].numpy()
+                                    weights = weights.transpose((2, 3, 1, 0))
+                                    base_conv.set_weights([weights])
+                                elif "downsample.1" in l.name:
+                                    base_bn = base_downsample.get_layer(l.name)
+                                    gamma = torch_state_dict[l.name + ".weight"].numpy()
+                                    beta = torch_state_dict[l.name + ".bias"].numpy()
+                                    mean = torch_state_dict[l.name + ".running_mean"].numpy()
+                                    var = torch_state_dict[l.name + ".running_var"].numpy()
+                                    base_bn.set_weights([gamma, beta, mean, var])
+                        # ------------------------SEfc
+                        if hasattr(res_block, "SEfc"):
+                            base_sefc = res_block.SEfc
+                            for l in base_sefc.layers:
+                                if "fc" in l.name:
+                                    base_fc = base_sefc.get_layer(l.name)
+                                    weights = torch_state_dict[l.name + ".weight"].numpy()
+                                    base_fc.set_weights([weights.transpose((1, 0))])
+        
 
 
 def model_SEResNetAuxTF(target_resolution: int, log_scale=False, activation="relu", cuda_used=True, model_resaved=False, **kwargs) -> BuildingNet_aux_tf:
@@ -720,10 +902,10 @@ if __name__ == "__main__":
     '''
 
     # ---load pretrained weights from PyTorch
-    # pretrained_weight = os.path.join("DL_run", "height", "check_pt_senet_100m", "checkpoint.pth.tar")
-    pretrained_weight_tf = os.path.join("DL_run", "height", "check_pt_senet_100m_TF")
-    # m = model_SEResNetAuxTF(target_resolution=100, trained_record=pretrained_weight, cuda_used=False, model_resaved=True, saved_path_tf="DL_run/height/check_pt_senet_100m_TF")
-    m = tf.keras.models.load_model(pretrained_weight_tf)
+    pretrained_weight = os.path.join("DL_run", "footprint", "check_pt_senet_100m", "checkpoint.pth.tar")
+    # pretrained_weight_tf = os.path.join("DL_run", "height", "check_pt_senet_100m_TF")
+    m = model_SEResNetAuxTF(target_resolution=100, activation="sigmoid", log_scale=False, trained_record=pretrained_weight, cuda_used=True, model_resaved=True, saved_path_tf="DL_run/footprint/check_pt_senet_100m_TF_gpu")
+    # m = tf.keras.models.load_model(pretrained_weight_tf)
     '''
     # ---check the trainable_variables in Tensorflow's implementation
     a_list = []
