@@ -25,6 +25,7 @@ SERVICE_ACCOUNT = "273902675329-compute@developer.gserviceaccount.com"
 #GS_OAUTH2_CLIENT_EMAIL = "*******************************"
 
 GS_ACCOUNT_JSON = "./gcKey/robotic-door-289313-a5a8eb3f5632.json"
+# GS_ACCOUNT_JSON = "/Users/lyy/Downloads/lib_added/robotic-door-289313-a5a8eb3f5632.json"
 
 # ---Google Cloud Storage bucket into which prediction datset will be written
 BUCKET = "lyy-shafts"
@@ -282,6 +283,7 @@ def export_satData_GEE(lon_min: Union[int, float], lat_min: Union[int, float], l
             "fileFormat": "TFRecord",
         }
         records_task = ee.batch.Export.table.toDrive(**records_task_config)
+        records_task.start()
     elif destination == "CloudStorage":
         records_task_config = {
             "collection": target_pt,
@@ -294,14 +296,18 @@ def export_satData_GEE(lon_min: Union[int, float], lat_min: Union[int, float], l
         records_task.start()
     else:
         raise NotImplementedError("Unknown destination: {0}. Supported destination: ['Drive', 'CloudStorage']".format(destination))
-
+    
+    print("[Submit] TFRecords is to be exported at [{0}, {1}, {2}, {3}]".format(lon_min, lon_max, lat_min, lat_max))
+    '''
     while records_task.active():
-        time.sleep(10)
+        time.sleep(2)
 
     if records_task.status()["state"] != "COMPLETED":
         print("[Error] TFRecords fails to be exported at [{0}, {1}, {2}, {3}]".format(lon_min, lon_max, lat_min, lat_max))
     else:
         print("[Success] TFRecords is exported at [{0}, {1}, {2}, {3}]".format(lon_min, lon_max, lat_min, lat_max))
+    '''
+    return records_task
     
     
 def parseSatTFRecord(example_proto: tf.train.Example, target_resolution: int, patch_size_ratio=1):
@@ -383,7 +389,7 @@ def createInferDataset(recordPathList: List[str], target_resolution: int, batch_
     return imgDataset
     
 
-def GBuildingMap(lon_min: Union[int, float], lat_min: Union[int, float], lon_max: Union[int, float], lat_max: Union[int, float], year: int, pretrained_model: Union[Dict[str, str], str], target_resolution: int, dx=0.09, dy=0.09, precision=2, batch_size=16, file_prefix=None, padding=0.02, patch_size_ratio=1, s2_cloud_prob_threshold=20, s2_cloud_prob_max=80, MTL=True, removed=True):
+def GBuildingMap(lon_min: Union[int, float], lat_min: Union[int, float], lon_max: Union[int, float], lat_max: Union[int, float], year: int, pretrained_model: Union[Dict[str, str], str], target_resolution: int, dx=0.09, dy=0.09, precision=2, batch_size=16, file_prefix=None, padding=0.02, patch_size_ratio=1, s2_cloud_prob_threshold=20, s2_cloud_prob_max=80, MTL=True, removed=True, num_parallel=1, num_task_queue=10):
     BH_min = 2.0
     BH_max = 1000.0
     BF_min = 0.0
@@ -414,13 +420,23 @@ def GBuildingMap(lon_min: Union[int, float], lat_min: Union[int, float], lon_max
     bucket_src = client_GCS.get_bucket(BUCKET)
 
     # ------divide ROI into smaller patches
-    num_lon = int(np.ceil((lon_max - lon_min) / dx))
-    num_lat = int(np.ceil((lat_max - lat_min) / dy))
-    lon_min_sub = np.arange(lon_min, lon_min + (num_lon + 1) * dx, dx)
+    num_lon = int(np.floor((lon_max - lon_min) / dx))
+    if num_lon > 0:
+        lon_min_sub = np.arange(lon_min, lon_min + num_lon * dx, dx)
+    else:
+        lon_min_sub = np.array([lon_min])
     xCell_num = len(lon_min_sub)
-    lat_max_sub = np.arange(lat_max, lat_max - (num_lat + 1) * dy, -dy)
+
+    num_lat = int(np.floor((lat_max - lat_min) / dy))
+    if num_lat > 0:
+        lat_max_sub = np.arange(lat_max, lat_max - num_lat * dy, -dy)
+    else:
+        lat_max_sub = np.array([lat_max])
     yCell_num = len(lat_max_sub)
 
+    ee_taskList = []
+    ee_coordsList = []
+    
     for xId in range(0, xCell_num):
         for yId in range(0, yCell_num):
             lon_min_tmp = lon_min_sub[xId]
@@ -444,58 +460,97 @@ def GBuildingMap(lon_min: Union[int, float], lat_min: Union[int, float], lon_max
             else:
                 file_suffix = "_".join([str(lon_min_tmp), str(lon_max_tmp), str(lat_min_tmp), str(lat_max_tmp)])
             
-            export_satData_GEE(lon_min=lon_min_tmp, lat_min=lat_min_tmp, lat_max=lat_max_tmp, lon_max=lon_max_tmp, year=year, target_resolution=target_resolution,
-                                    dst_dir=DATA_FOLDER, precision=precision, destination="CloudStorage", file_prefix=file_prefix, padding=padding, patch_size_ratio=patch_size_ratio,
-                                    s2_cloud_prob_threshold=s2_cloud_prob_threshold, s2_cloud_prob_max=s2_cloud_prob_max)
-                                    
+            task_tmp = export_satData_GEE(lon_min=lon_min_tmp, lat_min=lat_min_tmp, lat_max=lat_max_tmp, lon_max=lon_max_tmp, year=year, target_resolution=target_resolution,
+                                            dst_dir=DATA_FOLDER, precision=precision, destination="CloudStorage", file_prefix=file_prefix, padding=padding, patch_size_ratio=patch_size_ratio,
+                                            s2_cloud_prob_threshold=s2_cloud_prob_threshold, s2_cloud_prob_max=s2_cloud_prob_max)
+            
+            ee_taskList.append(task_tmp)
+            ee_coordsList.append([lon_min_str, lon_max_str, lat_min_str, lat_max_str])
+
+            if len(ee_taskList) >= num_task_queue:
+                task_flagList = [task.active() for task in ee_taskList]
+                while any(task_flagList):
+                    for i in range(0, len(task_flagList)):
+                        # ----only check the status of tasks which were previously active
+                        if task_flagList[i]:
+                            task_flagList[i] = ee_taskList[i].active()
+                    time.sleep(3)
+
+                for i in range(0, num_task_queue):
+                    if ee_taskList[i].status()["state"] != "COMPLETED":
+                        print("[Error] TFRecords fails to be exported at [{0}]".format(", ".join(ee_coordsList[i])))
+                    else:
+                        print("[Success] TFRecords is exported at [{0}]".format(", ".join(ee_coordsList[i])))
+
+                ee_taskList.clear()
+                ee_coordsList.clear()
+
+    for xId in range(0, xCell_num):
+        for yId in range(0, yCell_num):
+            lon_min_tmp = lon_min_sub[xId]
+            lon_max_tmp = lon_min_tmp + dx
+            lat_max_tmp = lat_max_sub[yId]
+            lat_min_tmp = lat_max_tmp - dy
+
+            # ------export patched datasets from Google Earth Engine (GEE) to Google Cloud Storage (GCS)
+            if any([not isinstance(lon_min_tmp, int), not isinstance(lon_max_tmp, int), not isinstance(lat_min_tmp, int), not isinstance(lat_max_tmp, int)]):
+                lon_min_str = str(round(lon_min_tmp, precision))
+                lat_min_str = str(round(lat_min_tmp, precision))
+                lon_max_str = str(round(lon_max_tmp, precision))
+                lat_max_str = str(round(lat_max_tmp, precision))
+                file_suffix = "_".join([lon_min_str, lon_max_str, lat_min_str, lat_max_str])
+            else:
+                file_suffix = "_".join([str(lon_min_tmp), str(lon_max_tmp), str(lat_min_tmp), str(lat_max_tmp)])
+
             # ------prepare the TFRecords dataset on GC
             fullPath_list = [f.name for f in bucket_src.list_blobs(prefix=DATA_FOLDER)]
             record_list = ["gs://" + BUCKET + "/" + f for f in fullPath_list if f.endswith(".tfrecord.gz") if file_suffix in f]
-            
-            img_ds = createInferDataset(record_list, target_resolution, batch_size=batch_size)
 
-            # ---------determine the information of dimensions of the dataset
-            h, w = re.findall(pattern=r"H(\d+)W(\d+)", string=record_list[0])[0]
-            h = int(h)
-            w = int(w)
-            
-            # ------model configuration
-            if MTL:
-                footprint_dta, height_dta = m.predict(x=img_ds, verbose=1)
-            else:
-                height_dta = m_height.predict(x=img_ds, verbose=1)
-                footprint_dta = m_footprint.predict(x=img_ds, verbose=1)
-            
-            footprint_dta = np.reshape(footprint_dta, newshape=(h, w))
-            footprint_dta = np.where(footprint_dta > BF_max, BF_max, footprint_dta)
+            if len(record_list) > 0:
+                img_ds = createInferDataset(record_list, target_resolution, batch_size=batch_size)
 
-            height_dta = np.reshape(height_dta, newshape=(h, w))
-            height_dta = np.where(height_dta > BH_max, BH_max, height_dta)
-            height_dta = np.where(height_dta < BH_min, BH_min, height_dta)
+                # ---------determine the information of dimensions of the dataset
+                h, w = re.findall(pattern=r"H(\d+)W(\d+)", string=record_list[0])[0]
+                h = int(h)
+                w = int(w)
+                
+                # ------model configuration
+                if MTL:
+                    footprint_dta, height_dta = m.predict(x=img_ds, verbose=1)
+                else:
+                    height_dta = m_height.predict(x=img_ds, verbose=1)
+                    footprint_dta = m_footprint.predict(x=img_ds, verbose=1)
+                
+                footprint_dta = np.reshape(footprint_dta, newshape=(h, w))
+                footprint_dta = np.where(footprint_dta > BF_max, BF_max, footprint_dta)
 
-            # ------export predicted images to Google Cloud Storage
-            output_geo_trans = rtransform.Affine(degree_ref[target_resolution], 0.0, lon_min_tmp, 0.0, -degree_ref[target_resolution], lat_max_tmp)
+                height_dta = np.reshape(height_dta, newshape=(h, w))
+                height_dta = np.where(height_dta > BH_max, BH_max, height_dta)
+                height_dta = np.where(height_dta < BH_min, BH_min, height_dta)
 
-            # footprint_name = BF_OUTPUT_GCS_PREFIX + "/" + "BF" + "_" + file_suffix + ".tif"
-            footprint_name = os.path.join(OUTPUT_local_FOLDER, "BF", "BF_" + file_suffix + ".tif")
-            with rasterio.Env():
-                with rasterio.open(footprint_name, "w+", width=w, height=h, count=1, crs="EPSG:4326", transform=output_geo_trans, dtype="float32") as out:
-                    out.write_band(1, footprint_dta)
-                print("*" * 10 + " Output BuildingFootprint File: {0} ".format(footprint_name) + "*" * 10)
-            
-            # height_name = BH_OUTPUT_GCS_PREFIX + "/" + "BH" + "_" + file_suffix + ".tif"
-            height_name = os.path.join(OUTPUT_local_FOLDER, "BH", "BH_" + file_suffix + ".tif")
-            # with rasterio.Env(GS_OAUTH2_PRIVATE_KEY=GS_OAUTH2_PRIVATE_KEY, GS_OAUTH2_CLIENT_EMAIL=GS_OAUTH2_CLIENT_EMAIL):
-            with rasterio.Env():
-                with rasterio.open(height_name, "w+", width=w, height=h, count=1, crs="EPSG:4326", transform=output_geo_trans, dtype="float32") as out:
-                    out.write_band(1, height_dta)
-                print("*" * 10 + " Output BuildingHeight File: {0} ".format(height_name) + "*" * 10)
-            
-            # ------delete temporary TFRcords files on the Google Cloud Storage
-            if removed:
-                for blob in bucket_src.list_blobs(prefix=DATA_FOLDER):
-                    if file_suffix in blob.name:
-                        blob.delete()
+                # ------export predicted images to Google Cloud Storage
+                output_geo_trans = rtransform.Affine(degree_ref[target_resolution], 0.0, lon_min_tmp, 0.0, -degree_ref[target_resolution], lat_max_tmp)
+
+                # footprint_name = BF_OUTPUT_GCS_PREFIX + "/" + "BF" + "_" + file_suffix + ".tif"
+                footprint_name = os.path.join(OUTPUT_local_FOLDER, "BF", "BF_" + file_suffix + ".tif")
+                with rasterio.Env():
+                    with rasterio.open(footprint_name, "w+", width=w, height=h, count=1, crs="EPSG:4326", transform=output_geo_trans, dtype="float32") as out:
+                        out.write_band(1, footprint_dta)
+                    print("*" * 10 + " Output BuildingFootprint File: {0} ".format(footprint_name) + "*" * 10)
+                
+                # height_name = BH_OUTPUT_GCS_PREFIX + "/" + "BH" + "_" + file_suffix + ".tif"
+                height_name = os.path.join(OUTPUT_local_FOLDER, "BH", "BH_" + file_suffix + ".tif")
+                # with rasterio.Env(GS_OAUTH2_PRIVATE_KEY=GS_OAUTH2_PRIVATE_KEY, GS_OAUTH2_CLIENT_EMAIL=GS_OAUTH2_CLIENT_EMAIL):
+                with rasterio.Env():
+                    with rasterio.open(height_name, "w+", width=w, height=h, count=1, crs="EPSG:4326", transform=output_geo_trans, dtype="float32") as out:
+                        out.write_band(1, height_dta)
+                    print("*" * 10 + " Output BuildingHeight File: {0} ".format(height_name) + "*" * 10)
+                
+                # ------delete temporary TFRcords files on the Google Cloud Storage
+                if removed:
+                    for blob in bucket_src.list_blobs(prefix=DATA_FOLDER):
+                        if file_suffix in blob.name:
+                            blob.delete()
 
     # ------merge the results of smaller patches
     if any([not isinstance(lon_min, int), not isinstance(lon_max, int), not isinstance(lat_min, int), not isinstance(lat_max, int)]):
@@ -525,8 +580,9 @@ def GBuildingMap(lon_min: Union[int, float], lat_min: Union[int, float], lon_max
 if __name__ == "__main__":
     # export_satData_GEE(lon_min=0, lat_min=51.2, lon_max=0.09, lat_max=51.29, year=2020, file_prefix="_", target_resolution=100, padding=0.01, s2_cloud_prob_threshold=20, s2_cloud_prob_max=80)
     # createInferDataset(["testSample/__0.0_0.9_51.20_51.29_H100W100.tfrecord.gz"], target_resolution=100)
+    # pretrained_weight = {"height": "check_pt_senet_100m_TF_gpu", "footprint": "check_pt_senet_100m_TF_gpu"}
     pretrained_weight = {"height": "check_pt_senet_100m_TF_gpu", "footprint": "check_pt_senet_100m_TF_gpu"}
 
     # x_min=0, x_max=1.8, y_min=50, y_max=51.8
-    GBuildingMap(lon_min=-0.15, lat_min=51.25, lon_max=0.15, lat_max=51.45, year=2020, dx=0.045, dy=0.045, precision=3, batch_size=256, pretrained_model=pretrained_weight, target_resolution=100, 
+    GBuildingMap(lon_min=-0.25, lat_min=51.20, lon_max=0.20, lat_max=51.65, year=2020, dx=0.045, dy=0.045, precision=3, batch_size=256, pretrained_model=pretrained_weight, target_resolution=100, num_task_queue=20,
                     file_prefix="_", padding=0.02, patch_size_ratio=1, s2_cloud_prob_threshold=20, s2_cloud_prob_max=80, MTL=False, removed=True)

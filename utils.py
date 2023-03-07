@@ -13,8 +13,6 @@ from pyproj import Proj
 from shapely.geometry import Polygon, shape
 
 
-ee.Initialize()
-
 cloudFreeKeepThresh = 1
 
 # ********* Parameters for shadow detection *********
@@ -617,7 +615,7 @@ def sentinel2cloudFree_download_by_extent(lon_min: float, lat_min: float, lon_ma
   point_right_bottom = [lon_max, lat_min]
   point_left_bottom = [lon_min, lat_min]
 
-  ee.Initialize()
+  # ee.Initialize()
 
   if padding is not None:
     if isinstance(padding, list):
@@ -699,6 +697,7 @@ def sentinel2cloudFree_download(sample_csv: str, dst_dir: str, path_prefix=None,
 
 
 if __name__ == "__main__":
+  ee.Initialize()
   '''
   sentinel2cloudFree_download(sample_csv="GEE_Download_2022_back.csv", dst_dir="Sentinel-2_export_CF", path_prefix="/Volumes/ForLyy/Temp/ReferenceData", 
                                 padding=0.05, cloud_prob_threshold=30, dst="Drive")
