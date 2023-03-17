@@ -24,8 +24,7 @@ SERVICE_ACCOUNT = "273902675329-compute@developer.gserviceaccount.com"
 #GS_OAUTH2_PRIVATE_KEY = "*******************************"
 #GS_OAUTH2_CLIENT_EMAIL = "*******************************"
 
-GS_ACCOUNT_JSON = "./gcKey/robotic-door-289313-a5a8eb3f5632.json"
-# GS_ACCOUNT_JSON = "/Users/lyy/Downloads/lib_added/robotic-door-289313-a5a8eb3f5632.json"
+GS_ACCOUNT_JSON = "*******************************"
 
 # ---Google Cloud Storage bucket into which prediction datset will be written
 BUCKET = "lyy-shafts"
@@ -75,7 +74,6 @@ def export_satData_GEE(lon_min: Union[int, float], lat_min: Union[int, float], l
     """
     # S2_SCALE = 0.0001
     S2_SCALE = 1.0
-    ee.Initialize(ee.ServiceAccountCredentials(SERVICE_ACCOUNT, GS_ACCOUNT_JSON))
 
     if any([not isinstance(lon_min, int), not isinstance(lon_max, int), not isinstance(lat_min, int), not isinstance(lat_max, int)]):
         lon_min_str = str(round(lon_min, precision))
@@ -133,6 +131,7 @@ def export_satData_GEE(lon_min: Union[int, float], lat_min: Union[int, float], l
         s1_time_end = datetime.datetime(year=s1_year, month=9, day=1).strftime("%Y-%m-%d")
     s1_ds = s1_ds.filter(ee.Filter.date(s1_time_start, s1_time_end))
     s1_ds = s1_ds.filterBounds(target_bd)
+    # ------note that if we use difference aggregation ops, exported bands would have different suffix with "_p50"
     s1_img = s1_ds.reduce(ee.Reducer.percentile([50]))
     s1_img = s1_img.clip(target_bd)
     # ------transform VV/VH bands of Sentinel-1 images to corresponding backscattering coefficients for the compatibility with SHAFTS
@@ -141,6 +140,8 @@ def export_satData_GEE(lon_min: Union[int, float], lat_min: Union[int, float], l
     # ------filter the Sentinel-2 cloud-free data
     s2_cld_threshold_base = 50
     s2_cld_prob_step = 5
+    cld_prb_set = np.arange(s2_cloud_prob_threshold, s2_cloud_prob_max + s2_cld_prob_step, s2_cld_prob_step)
+    num_cld_prb = len(cld_prb_set)
     s2_year = min(2022, max(year, 2018))    # Sentinel-2 availability: from 2017-03 to 2022-12
 
     s2_season = {"spring": ["{0}-03-01".format(s2_year), "{0}-06-01".format(s2_year)],
@@ -178,19 +179,20 @@ def export_satData_GEE(lon_min: Union[int, float], lat_min: Union[int, float], l
                         'rightField': 'system:index'
                     })
             }))
-            s2_combined_col = s2_combined_col.map(lambda x: x.clip(target_bd)).map(lambda x: x.set("ROI", target_bd))
-
-            cld_prb_set = np.arange(s2_cloud_prob_threshold, s2_cloud_prob_max + s2_cld_prob_step, s2_cld_prob_step)
-            num_cld_prb = len(cld_prb_set)
+            
+            s2_combined_col = s2_combined_col.map(lambda x: x.clip(target_bd))
 
             for cld_prb_id in range(0, num_cld_prb):
                 if not s2_img_found_flag:
                     cld_prb_v = int(cld_prb_set[cld_prb_id])
-                    s2_combined_col_tmp = s2_combined_col.map(lambda x: add_cloud_shadow_mask(x, cld_prb_v)).map(computeQualityScore).sort("CLOUDY_PERCENTAGE")
-                    s2_img_cloudFree = mergeCollection_LightGBM(s2_combined_col_tmp)
-                    s2_img_cloudFree = s2_img_cloudFree.reproject('EPSG:4326', None, 10)
+                    s2_combined_col_tmp = s2_combined_col.map(lambda x: add_cloud_shadow_mask_infer(x, cld_prb_v)).map(apply_cloud_shadow_mask_infer)
+                    
+                    s2_img_cloudFree = s2_combined_col_tmp.median()
+                    # s2_combined_col_tmp = s2_combined_col.map(lambda x: add_cloud_shadow_mask(x, cld_prb_v)).map(computeQualityScore).sort("CLOUDY_PERCENTAGE")
+                    # s2_img_cloudFree = mergeCollection_LightGBM(s2_combined_col_tmp)
+                    # s2_img_cloudFree = s2_img_cloudFree.reproject('EPSG:4326', None, 10)
                     s2_img_cloudFree = s2_img_cloudFree.clip(target_bd)
-
+                    #s2_img_found_flag = True
                     bandnamelist = s2_img_cloudFree.bandNames().getInfo()
                     if len(bandnamelist) > 0:
                         s2_img_found_flag = True
@@ -400,7 +402,7 @@ def GBuildingMap(lon_min: Union[int, float], lat_min: Union[int, float], lon_max
         # ------prepare the Tensorflow-based MTL models
         # m_path = MTL_MODEL_GCS_PREFIX + "/" + pretrained_model
         m_path = MTL_MODEL_local_PREFIX + "/" + pretrained_model
-        m = tf.keras.models.load_model(pretrained_model)
+        m = tf.keras.models.load_model(m_path)
         print("Model loaded from: {0}".format(m_path))
     else:
         # ------prepare the Tensorflow-based STL models
@@ -418,6 +420,8 @@ def GBuildingMap(lon_min: Union[int, float], lat_min: Union[int, float], lon_max
     # client_GCS = storage.Client(project=PROJECT_ID)
     client_GCS = storage.Client.from_service_account_json(GS_ACCOUNT_JSON)
     bucket_src = client_GCS.get_bucket(BUCKET)
+
+    ee.Initialize(ee.ServiceAccountCredentials(SERVICE_ACCOUNT, GS_ACCOUNT_JSON))
 
     # ------divide ROI into smaller patches
     num_lon = int(np.floor((lon_max - lon_min) / dx))
@@ -468,19 +472,31 @@ def GBuildingMap(lon_min: Union[int, float], lat_min: Union[int, float], lon_max
             ee_coordsList.append([lon_min_str, lon_max_str, lat_min_str, lat_max_str])
 
             if len(ee_taskList) >= num_task_queue:
-                task_flagList = [task.active() for task in ee_taskList]
-                while any(task_flagList):
-                    for i in range(0, len(task_flagList)):
-                        # ----only check the status of tasks which were previously active
-                        if task_flagList[i]:
-                            task_flagList[i] = ee_taskList[i].active()
-                    time.sleep(3)
+                task_IDList = [task.status()["name"].split("/")[-1] for task in ee_taskList]
+                task_stateList = [task.status()["state"] for task in ee_taskList]
+                task_msgList = ["" for task in ee_taskList]
+                task_runningID = [i for i in range(0, len(task_stateList)) if task_stateList[i] == "RUNNING"]
+                while len(task_runningID) > 0:
+                    num_active = 0
+                    # ----only check the status of tasks which were previously active
+                    for tid in task_runningID:
+                        tid_st = ee_taskList[tid].status()
+                        # ------ref to: https://developers.google.com/earth-engine/guides/processing_environments
+                        if tid_st["state"] not in ["UNSUBMITTED", "READY", "RUNNING"]:
+                            task_runningID.remove(tid)
+                            task_stateList[tid] = tid_st["state"]
+                            if tid_st["state"] != "COMPLETED":
+                                task_msgList[tid] = tid_st["error_message"]
+                        else:
+                            num_active += 1
+                    time.sleep(0.5 * num_active)
 
                 for i in range(0, num_task_queue):
-                    if ee_taskList[i].status()["state"] != "COMPLETED":
-                        print("[Error] TFRecords fails to be exported at [{0}]".format(", ".join(ee_coordsList[i])))
+                    if task_stateList[i] != "COMPLETED":
+                        print(task_stateList[i])
+                        print("[Error] TFRecords fails to be exported at [{0}] (TaskID = {1}) due to {2}".format(", ".join(ee_coordsList[i]), task_IDList[i], task_msgList[i]))
                     else:
-                        print("[Success] TFRecords is exported at [{0}]".format(", ".join(ee_coordsList[i])))
+                        print("[Success] TFRecords is exported at [{0}] (TaskID = {1})".format(", ".join(ee_coordsList[i]), task_IDList[i]))
 
                 ee_taskList.clear()
                 ee_coordsList.clear()
@@ -581,8 +597,9 @@ if __name__ == "__main__":
     # export_satData_GEE(lon_min=0, lat_min=51.2, lon_max=0.09, lat_max=51.29, year=2020, file_prefix="_", target_resolution=100, padding=0.01, s2_cloud_prob_threshold=20, s2_cloud_prob_max=80)
     # createInferDataset(["testSample/__0.0_0.9_51.20_51.29_H100W100.tfrecord.gz"], target_resolution=100)
     # pretrained_weight = {"height": "check_pt_senet_100m_TF_gpu", "footprint": "check_pt_senet_100m_TF_gpu"}
-    pretrained_weight = {"height": "check_pt_senet_100m_TF_gpu", "footprint": "check_pt_senet_100m_TF_gpu"}
+    # pretrained_weight = {"height": "check_pt_senet_100m_MTL_TF_gpu", "footprint": "check_pt_senet_100m_MTL_TF_gpu"}
+    pretrained_weight = "height/check_pt_senet_100m_MTL_TF_gpu"
 
     # x_min=0, x_max=1.8, y_min=50, y_max=51.8
-    GBuildingMap(lon_min=-0.25, lat_min=51.20, lon_max=0.20, lat_max=51.65, year=2020, dx=0.045, dy=0.045, precision=3, batch_size=256, pretrained_model=pretrained_weight, target_resolution=100, num_task_queue=20,
-                    file_prefix="_", padding=0.02, patch_size_ratio=1, s2_cloud_prob_threshold=20, s2_cloud_prob_max=80, MTL=False, removed=True)
+    GBuildingMap(lon_min=-0.50, lat_min=51.00, lon_max=0.40, lat_max=51.90, year=2020, dx=0.09, dy=0.09, precision=3, batch_size=512, pretrained_model=pretrained_weight, target_resolution=100, num_task_queue=10,
+                    file_prefix="_", padding=0.02, patch_size_ratio=1, s2_cloud_prob_threshold=20, s2_cloud_prob_max=80, MTL=True, removed=True)

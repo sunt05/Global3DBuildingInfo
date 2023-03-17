@@ -634,23 +634,23 @@ class BuildingNetMTL_aux_tf(tf.keras.Model):
     def load_pretrained_model(self, trained_record, mode="torch"):
         if self.cuda_used:
             torch_state_dict = torch.load(trained_record)["state_dict"]
-            for var in ["height", "footprint"]:
+            for target_var in ["height", "footprint"]:
                 # ------initialize fc layer
-                tf_fc = self.get_layer("fc_{0}".format(var))
-                weights = torch_state_dict["fc_{0}.weight".format(var)].cpu().numpy()
-                bias = torch_state_dict["fc_{0}.bias".format(var)].cpu().numpy()
+                tf_fc = self.get_layer("fc_{0}".format(target_var))
+                weights = torch_state_dict["fc_{0}.weight".format(target_var)].cpu().numpy()
+                bias = torch_state_dict["fc_{0}.bias".format(target_var)].cpu().numpy()
                 tf_fc.set_weights([weights.transpose((1, 0)), bias])
                 # ------initialize bn_out layer
-                tf_bn_out = self.get_layer("bn_out_{0}".format(var))
-                gamma = torch_state_dict["bn_out_{0}.weight".format(var)].cpu().numpy()
-                beta = torch_state_dict["bn_out_{0}.bias".format(var)].cpu().numpy()
-                mean = torch_state_dict["bn_out_{0}.running_mean".format(var)].cpu().numpy()
-                var = torch_state_dict["bn_out_{0}.running_var".format(var)].cpu().numpy()
+                tf_bn_out = self.get_layer("bn_out_{0}".format(target_var))
+                gamma = torch_state_dict["bn_out_{0}.weight".format(target_var)].cpu().numpy()
+                beta = torch_state_dict["bn_out_{0}.bias".format(target_var)].cpu().numpy()
+                mean = torch_state_dict["bn_out_{0}.running_mean".format(target_var)].cpu().numpy()
+                var = torch_state_dict["bn_out_{0}.running_var".format(target_var)].cpu().numpy()
                 tf_bn_out.set_weights([gamma, beta, mean, var])
                 # ------initialize fc_out layer
-                tf_fc_out = self.get_layer("fc_out_{0}".format(var))
-                weights = torch_state_dict["fc_out_{0}.weight".format(var)].cpu().numpy()
-                bias = torch_state_dict["fc_out_{0}.bias".format(var)].cpu().numpy()
+                tf_fc_out = self.get_layer("fc_out_{0}".format(target_var))
+                weights = torch_state_dict["fc_out_{0}.weight".format(target_var)].cpu().numpy()
+                bias = torch_state_dict["fc_out_{0}.bias".format(target_var)].cpu().numpy()
                 tf_fc_out.set_weights([weights.transpose((1, 0)), bias])
             # ------initialize backbone layer
             for bkbone in ["features", "aux_features"]:
@@ -724,23 +724,23 @@ class BuildingNetMTL_aux_tf(tf.keras.Model):
                                     base_fc.set_weights([weights.transpose((1, 0))])
         else:
             torch_state_dict = torch.load(trained_record, map_location=torch.device('cpu'))["state_dict"]
-            for var in ["height", "footprint"]:
+            for target_var in ["height", "footprint"]:
                 # ------initialize fc layer
-                tf_fc = self.get_layer("fc_{0}".format(var))
-                weights = torch_state_dict["fc_{0}.weight".format(var)].numpy()
-                bias = torch_state_dict["fc_{0}.bias".format(var)].numpy()
+                tf_fc = self.get_layer("fc_{0}".format(target_var))
+                weights = torch_state_dict["fc_{0}.weight".format(target_var)].numpy()
+                bias = torch_state_dict["fc_{0}.bias".format(target_var)].numpy()
                 tf_fc.set_weights([weights.transpose((1, 0)), bias])
                 # ------initialize bn_out layer
-                tf_bn_out = self.get_layer("bn_out_{0}".format(var))
-                gamma = torch_state_dict["bn_out_{0}.weight".format(var)].numpy()
-                beta = torch_state_dict["bn_out_{0}.bias".format(var)].numpy()
-                mean = torch_state_dict["bn_out_{0}.running_mean".format(var)].numpy()
-                var = torch_state_dict["bn_out_{0}.running_var".format(var)].numpy()
+                tf_bn_out = self.get_layer("bn_out_{0}".format(target_var))
+                gamma = torch_state_dict["bn_out_{0}.weight".format(target_var)].numpy()
+                beta = torch_state_dict["bn_out_{0}.bias".format(target_var)].numpy()
+                mean = torch_state_dict["bn_out_{0}.running_mean".format(target_var)].numpy()
+                var = torch_state_dict["bn_out_{0}.running_var".format(target_var)].numpy()
                 tf_bn_out.set_weights([gamma, beta, mean, var])
                 # ------initialize fc_out layer
-                tf_fc_out = self.get_layer("fc_out_{0}".format(var))
-                weights = torch_state_dict["fc_out_{0}.weight".format(var)].numpy()
-                bias = torch_state_dict["fc_out_{0}.bias".format(var)].numpy()
+                tf_fc_out = self.get_layer("fc_out_{0}".format(target_var))
+                weights = torch_state_dict["fc_out_{0}.weight".format(target_var)].numpy()
+                bias = torch_state_dict["fc_out_{0}.bias".format(target_var)].numpy()
                 tf_fc_out.set_weights([weights.transpose((1, 0)), bias])
             # ------initialize backbone layer
             for bkbone in ["features", "aux_features"]:
@@ -902,9 +902,10 @@ if __name__ == "__main__":
     '''
 
     # ---load pretrained weights from PyTorch
-    pretrained_weight = os.path.join("DL_run", "footprint", "check_pt_senet_100m", "checkpoint.pth.tar")
+    pretrained_weight = os.path.join("DL_run", "height", "check_pt_senet_100m_MTL", "checkpoint.pth.tar")
     # pretrained_weight_tf = os.path.join("DL_run", "height", "check_pt_senet_100m_TF")
-    m = model_SEResNetAuxTF(target_resolution=100, activation="sigmoid", log_scale=False, trained_record=pretrained_weight, cuda_used=True, model_resaved=True, saved_path_tf="DL_run/footprint/check_pt_senet_100m_TF_gpu")
+    # m = model_SEResNetAuxTF(target_resolution=100, activation="sigmoid", log_scale=False, trained_record=pretrained_weight, cuda_used=True, model_resaved=True, saved_path_tf="DL_run/footprint/check_pt_senet_100m_TF_gpu")
+    m = model_SEResNetMTLAuxTF(target_resolution=100, log_scale=False, trained_record=pretrained_weight, cuda_used=True, model_resaved=True, saved_path_tf="DL_run/footprint/check_pt_senet_100m_MTL_TF_gpu")
     # m = tf.keras.models.load_model(pretrained_weight_tf)
     '''
     # ---check the trainable_variables in Tensorflow's implementation

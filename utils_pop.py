@@ -169,9 +169,9 @@ def getPopStats(pop_info_dir: str, pD_min=50, pD_max=1000, pD_step=50):
   ax.set_xlabel("Minimum population density [persons / $\mathrm{km}^2$]")
   ax.set_ylabel("Number of selected ROIs")
   plt.tight_layout(pad=1.08)
-  plt.savefig("GPWv4_ROI.png", dpi=300)
+  plt.savefig("HRSL_ROI.png", dpi=300)
 
-  pop_df.to_csv("GPWv4_ROI.csv", index=False) 
+  pop_df.to_csv("HRSL_ROI.csv", index=False) 
 
 
 if __name__ == "__main__":
@@ -183,6 +183,7 @@ if __name__ == "__main__":
   # getPopInfo_GPWv4(output_path="HRSL_info_GPWv4.h5", x_min=0, x_max=1.8, y_min=50, y_max=51.8, dx=0.09, dy=0.09)
 
   # globalPopExport()
-  getPopStats(pop_info_dir="GPWv4_info", pD_min=50, pD_max=1000, pD_step=50)
+  # getPopStats(pop_info_dir="GPWv4_info", pD_min=50, pD_max=1000, pD_step=50)
+  getPopStats(pop_info_dir="HRSL_info", pD_min=50, pD_max=1000, pD_step=50)
 
   # selectROI_pop(pop_info_path="HRSL_info_GPWv4.h5", pop_density_min=300)

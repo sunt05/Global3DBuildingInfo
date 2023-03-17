@@ -16,7 +16,6 @@ from shapely.geometry import Polygon, shape
 cloudFreeKeepThresh = 1
 
 # ********* Parameters for shadow detection *********
-cloudHeights = ee.List.sequence(200, 10000, 250)
 irSumThresh = 0.3
 ndviWaterThresh = -0.1
 erodePixels = 1.5
@@ -329,9 +328,9 @@ def mergeCollection_LightGBM(imgC: ee.ImageCollection):
   #return best.median()
 
 
-def apply_cloud_shadow_mask(img: ee.Image):
+def apply_cloud_shadow_mask_infer(img: ee.Image):
   # Subset the cloudmask band and invert it so clouds/shadow are 0, else 1.
-  not_cld_shdw = img.select('cloudMask').Not()
+  not_cld_shdw = img.select('cloudmask').Not()
 
   # Subset reflectance bands and update their masks, return the result.
   return img.updateMask(not_cld_shdw)
@@ -343,6 +342,14 @@ def add_cloud_bands(img: ee.Image, cloud_prob_threshold=50):
   is_cloud = cloud_prob.gt(cloud_prob_threshold / 100.0).rename("cloudFlag")
 
   return img.addBands(ee.Image([cloud_prob, is_cloud]))
+
+
+def add_cloud_bands_infer(img: ee.Image, cloud_prob_threshold=50):
+  cloud_prob = ee.Image(img.get("s2cloudless")).select("probability").rename("cloudScore")
+  # ------1 for cloudy pixels and 0 for non-cloudy pixels
+  is_cloud = cloud_prob.gt(cloud_prob_threshold).rename("cloudFlag")
+
+  return img.addBands(ee.Image([is_cloud]))
 
 
 def dilatedErossion(score):
@@ -400,6 +407,7 @@ def add_shadow_bands(img: ee.Image):
     # ------`displace` warps an image using an image of displacements.
     return img.select(['cloudScore']).displace(ee.Image.constant(x).addBands(ee.Image.constant(y)))
 
+  cloudHeights = ee.List.sequence(200, 10000, 250)
   shadows = cloudHeights.map(func_uke)
   shadowMasks = ee.ImageCollection.fromImages(shadows)
   shadowMask = shadowMasks.mean()
@@ -413,8 +421,9 @@ def add_shadow_bands(img: ee.Image):
 
   return img
 
-'''
-def add_shadow_bands(img: ee.Image, nir_dark_threshold=0.15, cloud_proj_distance=1):
+
+# ------recommended for exporting cloud-free Sentinel-2's images during inference
+def add_shadow_bands_infer(img: ee.Image, nir_dark_threshold=0.15, cloud_proj_distance=1.5):
   # ------identify the water pixels from the SCL band
   not_water = img.select("SCL").neq(6)
 
@@ -439,12 +448,26 @@ def add_shadow_bands(img: ee.Image, nir_dark_threshold=0.15, cloud_proj_distance
   # ------add dark pixels, cloud projection, and identified shadows as image bands.
   img = img.addBands(ee.Image([dark_pixels, cld_proj, shadows]))
 
-  score = img.select(['cloudFlag']).max(img.select(['shadowFlag']))
-  score = score.reproject('EPSG:4326', None, 20).reduceNeighborhood(reducer=ee.Reducer.max(), kernel=ee.Kernel.square(3))
-  score = score.multiply(-1)
+  return img
+
+
+# ------recommended for exporting cloud-free Sentinel-2's images during inference
+def add_cloud_shadow_mask_infer(img: ee.Image, cloud_prob_threshold=50):
+  img_cloud = add_cloud_bands_infer(img, cloud_prob_threshold)
+  img_cloud_shadow = add_shadow_bands_infer(img_cloud)
+
+  is_cld_shdw = img_cloud_shadow.select("cloudFlag").add(img_cloud_shadow.select("shadowFlag")).gt(0)
+  is_cld_shdw = (is_cld_shdw.focalMin(2).focalMax(3).reproject(**{'crs': img.select([0]).projection(), 'scale': 20}).rename('cloudmask'))
   
-  return img.addBands(score.rename('cloudShadowScore'))
-'''
+  return img.addBands(is_cld_shdw)
+
+
+def apply_cld_shdw_mask_infer(img):
+    # Subset the cloudmask band and invert it so clouds/shadow are 0, else 1.
+    not_cld_shdw = img.select('cloudmask').Not()
+
+    # Subset reflectance bands and update their masks, return the result.
+    return img.select('B.*').updateMask(not_cld_shdw)
 
 
 # def add_cloud_shadow_mask(img: ee.Image, bf_size=3, cloud_prob_threshold=50, nir_dark_threshold=0.15, cloud_proj_distance=1):
@@ -479,6 +502,7 @@ def add_cloud_shadow_mask(img: ee.Image, cloud_prob_threshold=50):
 
 # ---ref to: https://developers.google.com/earth-engine/tutorials/community/sentinel-2-s2cloudless
 # def exportCloudFreeSen2_LightGBM(file_name, dst_dir, date_interval, roi, bf_size=3, cloud_prob_threshold=20, nir_dark_threshold=0.15, cloud_proj_distance=2, dst="Drive"):
+# ------recommended for exporting cloud-free Sentinel-2's images during training
 def exportCloudFreeSen2_LightGBM(file_name, dst_dir, date_interval, roi, cloud_prob_threshold=40, dst="Drive"):
   cld_threshold_base = 50
   time_start_str, time_end_str = date_interval
