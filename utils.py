@@ -13,7 +13,8 @@ from pyproj import Proj
 from shapely.geometry import Polygon, shape
 
 
-cloudFreeKeepThresh = 1
+cloudFreeKeepThresh = 2
+cloudScale = 30
 
 # ********* Parameters for shadow detection *********
 irSumThresh = 0.3
@@ -328,12 +329,24 @@ def mergeCollection_LightGBM(imgC: ee.ImageCollection):
   #return best.median()
 
 
-def apply_cloud_shadow_mask_infer(img: ee.Image):
+def apply_cloud_shadow_mask_infer(imgC: ee.ImageCollection):
+  best = imgC.filter(ee.Filter.lt('CLOUDY_PERCENTAGE', cloudFreeKeepThresh)).sort('CLOUDY_PERCENTAGE', False)
+
+  # Composites all the images in a collection, using a quality band as a per-pixel ordering function (use pixels with the HIGHEST score).
+  filtered = imgC.qualityMosaic('cloudShadowScore')
+
+  # Add the quality mosaic to fill in any missing areas of the ROI which aren't covered by good images
+  newC = ee.ImageCollection.fromImages([filtered, best.mosaic()])
+
+  # Note that the `mosaic` method composites overlapping images according to their order in the collection (last, i.e., best, on top)
+  return ee.Image(newC.mosaic())
+  '''
   # Subset the cloudmask band and invert it so clouds/shadow are 0, else 1.
   not_cld_shdw = img.select('cloudmask').Not()
 
   # Subset reflectance bands and update their masks, return the result.
   return img.updateMask(not_cld_shdw)
+  '''
 
 
 def add_cloud_bands(img: ee.Image, cloud_prob_threshold=50):
@@ -349,7 +362,7 @@ def add_cloud_bands_infer(img: ee.Image, cloud_prob_threshold=50):
   # ------1 for cloudy pixels and 0 for non-cloudy pixels
   is_cloud = cloud_prob.gt(cloud_prob_threshold).rename("cloudFlag")
 
-  return img.addBands(ee.Image([is_cloud]))
+  return img.addBands(ee.Image([cloud_prob, is_cloud]))
 
 
 def dilatedErossion(score):
@@ -366,7 +379,18 @@ def computeQualityScore(img: ee.Image):
   # ------QualityScore is calculated by selecting the maximum value between the Cloud Score and Shadow Score for each pixel
   score = img.select(['cloudScore']).max(img.select(['shadowScore']))
 
-  score = score.reproject('EPSG:4326', None, 20).reduceNeighborhood(reducer=ee.Reducer.mean(), kernel=ee.Kernel.square(5))
+  score = score.reproject('EPSG:4326', None, 20).reduceNeighborhood(reducer=ee.Reducer.mean(), kernel=ee.Kernel.square(1))
+
+  score = score.multiply(-1)
+
+  return img.addBands(score.rename('cloudShadowScore'))
+
+
+def computeQualityScore_infer(img: ee.Image):
+  # ------QualityScore is calculated by selecting the maximum value between the Cloud Score and Shadow Score for each pixel
+  score = img.select(['cloudScore']).max(img.select(['shadowFlag']))
+
+  score = score.reproject('EPSG:4326', None, 30).reduceNeighborhood(reducer=ee.Reducer.mean(), kernel=ee.Kernel.square(1))
 
   score = score.multiply(-1)
 
@@ -446,7 +470,7 @@ def add_shadow_bands_infer(img: ee.Image, nir_dark_threshold=0.15, cloud_proj_di
   shadows = cld_proj.multiply(dark_pixels).rename('shadowFlag')
 
   # ------add dark pixels, cloud projection, and identified shadows as image bands.
-  img = img.addBands(ee.Image([dark_pixels, cld_proj, shadows]))
+  img = img.addBands(ee.Image([cld_proj, shadows]))
 
   return img
 
@@ -456,10 +480,23 @@ def add_cloud_shadow_mask_infer(img: ee.Image, cloud_prob_threshold=50):
   img_cloud = add_cloud_bands_infer(img, cloud_prob_threshold)
   img_cloud_shadow = add_shadow_bands_infer(img_cloud)
 
-  is_cld_shdw = img_cloud_shadow.select("cloudFlag").add(img_cloud_shadow.select("shadowFlag")).gt(0)
-  is_cld_shdw = (is_cld_shdw.focalMin(2).focalMax(3).reproject(**{'crs': img.select([0]).projection(), 'scale': 20}).rename('cloudmask'))
+  #roi = ee.Geometry(img.get('ROI'))
+  imgPoly = ee.Algorithms.GeometryConstructors.Polygon(
+            ee.Geometry(img.get("system:footprint")).coordinates()
+  )
+
+  cloudMask = img_cloud_shadow.select("cloudFlag").add(img_cloud_shadow.select("shadowFlag")).gt(0)
+  cloudMask = (cloudMask.focalMin(1.5).focalMax(1.5).reproject(**{'crs': img.select([0]).projection(), 'scale': cloudScale}).rename('cloudmask'))
+  cloudAreaImg = cloudMask.multiply(ee.Image.pixelArea())
+
+  stats = cloudAreaImg.reduceRegion(reducer=ee.Reducer.sum(), scale=cloudScale, maxPixels=1e14)
+
+  cloudPercent = ee.Number(stats.get('cloudmask')).divide(imgPoly.area()).multiply(100)  
+  img_cloud_shadow = img_cloud_shadow.set('CLOUDY_PERCENTAGE', cloudPercent)
+  #cloudPercentROI = ee.Number(stats.get('cloudmask')).divide(roi.area()).multiply(100)
+  #img_cloud_shadow = img_cloud_shadow.set('CLOUDY_PERCENTAGE_ROI', cloudPercentROI)
   
-  return img.addBands(is_cld_shdw)
+  return img_cloud_shadow
 
 
 def apply_cld_shdw_mask_infer(img):

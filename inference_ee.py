@@ -44,10 +44,11 @@ STL_MODEL_local_PREFIX = "./DL_run"
 MTL_MODEL_local_PREFIX = "./DL_run"
 
 
-FEATURES = ["VV_p50", "VH_p50", "B4", "B3", "B2", "B8", "elevation"]
+# FEATURES = ["VV_p50", "VH_p50", "B4", "B3", "B2", "B8", "elevation"]
+FEATURES = ["VV", "VH", "B4", "B3", "B2", "B8", "elevation"]
 
 
-def export_satData_GEE(lon_min: Union[int, float], lat_min: Union[int, float], lon_max: Union[int, float], lat_max: Union[int, float], year: int, target_resolution: int, dst_dir: str, precision=2, destination="CloudStorage", file_prefix=None, padding=0.04, patch_size_ratio=1, s2_cloud_prob_threshold=20, s2_cloud_prob_max=80):
+def export_satData_GEE(lon_min: Union[int, float], lat_min: Union[int, float], lon_max: Union[int, float], lat_max: Union[int, float], year: int, target_resolution: int, dst_dir: str, precision=2, destination="CloudStorage", file_prefix=None, padding=0.02, patch_size_ratio=1, s2_cloud_prob_threshold=20, s2_cloud_prob_max=80):
     """Export satellite images and data to Google Cloud Storage (GCS).
 
     Parameters
@@ -116,7 +117,7 @@ def export_satData_GEE(lon_min: Union[int, float], lat_min: Union[int, float], l
     DEM_dta = DEM_dta.clip(target_bd)
     
     # ------filter the Sentinel-1 data
-    s1_ds = ee.ImageCollection("COPERNICUS/S1_GRD")
+    s1_ds = ee.ImageCollection("COPERNICUS/S1_GRD_FLOAT")
     s1_ds = s1_ds.filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VV'))
     s1_ds = s1_ds.filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VH'))
     s1_ds = s1_ds.filter(ee.Filter.eq('instrumentMode', 'IW'))
@@ -132,13 +133,15 @@ def export_satData_GEE(lon_min: Union[int, float], lat_min: Union[int, float], l
     s1_ds = s1_ds.filter(ee.Filter.date(s1_time_start, s1_time_end))
     s1_ds = s1_ds.filterBounds(target_bd)
     # ------note that if we use difference aggregation ops, exported bands would have different suffix with "_p50"
-    s1_img = s1_ds.reduce(ee.Reducer.percentile([50]))
-    s1_img = s1_img.clip(target_bd)
+    # s1_img = s1_ds.reduce(ee.Reducer.percentile([50]))
+    # s1_img = s1_img.clip(target_bd)
+    s1_img = s1_ds.mean().clip(target_bd)
+
     # ------transform VV/VH bands of Sentinel-1 images to corresponding backscattering coefficients for the compatibility with SHAFTS
     # s1_img = get_backscatterCoef_EE(s1_img)
 
     # ------filter the Sentinel-2 cloud-free data
-    s2_cld_threshold_base = 50
+    s2_cld_threshold_base = 20
     s2_cld_prob_step = 5
     cld_prb_set = np.arange(s2_cloud_prob_threshold, s2_cloud_prob_max + s2_cld_prob_step, s2_cld_prob_step)
     num_cld_prb = len(cld_prb_set)
@@ -185,17 +188,15 @@ def export_satData_GEE(lon_min: Union[int, float], lat_min: Union[int, float], l
             for cld_prb_id in range(0, num_cld_prb):
                 if not s2_img_found_flag:
                     cld_prb_v = int(cld_prb_set[cld_prb_id])
-                    s2_combined_col_tmp = s2_combined_col.map(lambda x: add_cloud_shadow_mask_infer(x, cld_prb_v)).map(apply_cloud_shadow_mask_infer)
-                    
-                    s2_img_cloudFree = s2_combined_col_tmp.median()
-                    # s2_combined_col_tmp = s2_combined_col.map(lambda x: add_cloud_shadow_mask(x, cld_prb_v)).map(computeQualityScore).sort("CLOUDY_PERCENTAGE")
-                    # s2_img_cloudFree = mergeCollection_LightGBM(s2_combined_col_tmp)
-                    # s2_img_cloudFree = s2_img_cloudFree.reproject('EPSG:4326', None, 10)
-                    s2_img_cloudFree = s2_img_cloudFree.clip(target_bd)
-                    #s2_img_found_flag = True
-                    bandnamelist = s2_img_cloudFree.bandNames().getInfo()
-                    if len(bandnamelist) > 0:
+                    s2_combined_col_tmp = s2_combined_col.map(lambda x: add_cloud_shadow_mask_infer(x, cld_prb_v)).map(computeQualityScore_infer)
+                    s2_cloudless_col_BEST = s2_combined_col_tmp.filter(ee.Filter.lt('CLOUDY_PERCENTAGE', cloudFreeKeepThresh))
+
+                    if s2_cloudless_col_BEST.size().gt(0):
                         s2_img_found_flag = True
+                        s2_cloudless_col_BEST = s2_cloudless_col_BEST.sort("CLOUDY_PERCENTAGE", False)
+                        s2_filtered = s2_combined_col_tmp.qualityMosaic('cloudShadowScore')
+                        newC = ee.ImageCollection.fromImages([s2_filtered, s2_cloudless_col_BEST.mosaic()])
+                        s2_img_cloudFree = ee.Image(newC.mosaic()).clip(target_bd)
                 else:
                     break
         else:
@@ -349,8 +350,9 @@ def rgb_rescale_tf(dta: tf.Tensor, q1=0.98, q2=0.02, vmin=0.0, vmax=1.0):
 
 
 def get_backscatterCoef_tf(raw_s1_dta: tf.Tensor):
-    coef = tf.math.pow(10.0, raw_s1_dta / 10.0)
-    coef = tf.where(coef > 1.0, 1.0, coef)
+    # coef = tf.math.pow(10.0, raw_s1_dta / 10.0)
+    # coef = tf.where(coef > 1.0, 1.0, coef)
+    coef = tf.clip_by_value(raw_s1_dta, 0.0, 1.0)
     return coef
 
 
@@ -376,9 +378,11 @@ def toTupleImage(feature_dict: Dict[str, tf.Tensor]):
 
 def createInferDataset(recordPathList: List[str], target_resolution: int, batch_size=1) -> tf.data.TFRecordDataset:
     imgDataset = tf.data.TFRecordDataset(recordPathList, compression_type="GZIP")
-    imgDataset = imgDataset.map(lambda x: parseSatTFRecord(x, target_resolution), num_parallel_calls=1)
+    imgDataset = imgDataset.map(lambda x: parseSatTFRecord(x, target_resolution), num_parallel_calls=8)
 
     imgDataset = imgDataset.map(toTupleImage).batch(batch_size)
+    dta = list(imgDataset.as_numpy_iterator())
+    print(dta[0][0].shape)
     '''
     dta = list(imgDataset.as_numpy_iterator())
     print(dta[0][0][0, :, :, 0])
@@ -391,7 +395,7 @@ def createInferDataset(recordPathList: List[str], target_resolution: int, batch_
     return imgDataset
     
 
-def GBuildingMap(lon_min: Union[int, float], lat_min: Union[int, float], lon_max: Union[int, float], lat_max: Union[int, float], year: int, pretrained_model: Union[Dict[str, str], str], target_resolution: int, dx=0.09, dy=0.09, precision=2, batch_size=16, file_prefix=None, padding=0.02, patch_size_ratio=1, s2_cloud_prob_threshold=20, s2_cloud_prob_max=80, MTL=True, removed=True, num_parallel=1, num_task_queue=10):
+def GBuildingMap(lon_min: Union[int, float], lat_min: Union[int, float], lon_max: Union[int, float], lat_max: Union[int, float], year: int, pretrained_model: Union[Dict[str, str], str], target_resolution: int, dx=0.09, dy=0.09, precision=2, batch_size=16, file_prefix=None, padding=0.02, patch_size_ratio=1, s2_cloud_prob_threshold=20, s2_cloud_prob_max=80, MTL=True, removed=True, num_parallel=1, num_task_queue=10, num_cpu=2):
     BH_min = 2.0
     BH_max = 1000.0
     BF_min = 0.0
@@ -424,14 +428,14 @@ def GBuildingMap(lon_min: Union[int, float], lat_min: Union[int, float], lon_max
     ee.Initialize(ee.ServiceAccountCredentials(SERVICE_ACCOUNT, GS_ACCOUNT_JSON))
 
     # ------divide ROI into smaller patches
-    num_lon = int(np.floor((lon_max - lon_min) / dx))
+    num_lon = int(round((lon_max - lon_min) / dx, precision))
     if num_lon > 0:
         lon_min_sub = np.arange(lon_min, lon_min + num_lon * dx, dx)
     else:
         lon_min_sub = np.array([lon_min])
     xCell_num = len(lon_min_sub)
 
-    num_lat = int(np.floor((lat_max - lat_min) / dy))
+    num_lat = int(round((lat_max - lat_min) / dy, precision))
     if num_lat > 0:
         lat_max_sub = np.arange(lat_max, lat_max - num_lat * dy, -dy)
     else:
@@ -471,11 +475,16 @@ def GBuildingMap(lon_min: Union[int, float], lat_min: Union[int, float], lon_max
             ee_taskList.append(task_tmp)
             ee_coordsList.append([lon_min_str, lon_max_str, lat_min_str, lat_max_str])
 
-            if len(ee_taskList) >= num_task_queue:
+            if xId == xCell_num - 1 and yId == yCell_num - 1:
+                final_flag = True
+            else:
+                final_flag = False
+
+            if len(ee_taskList) >= num_task_queue or final_flag:
                 task_IDList = [task.status()["name"].split("/")[-1] for task in ee_taskList]
                 task_stateList = [task.status()["state"] for task in ee_taskList]
                 task_msgList = ["" for task in ee_taskList]
-                task_runningID = [i for i in range(0, len(task_stateList)) if task_stateList[i] == "RUNNING"]
+                task_runningID = [i for i in range(0, len(task_stateList)) if task_stateList[i] in ["UNSUBMITTED", "READY", "RUNNING"]]
                 while len(task_runningID) > 0:
                     num_active = 0
                     # ----only check the status of tasks which were previously active
@@ -487,13 +496,13 @@ def GBuildingMap(lon_min: Union[int, float], lat_min: Union[int, float], lon_max
                             task_stateList[tid] = tid_st["state"]
                             if tid_st["state"] != "COMPLETED":
                                 task_msgList[tid] = tid_st["error_message"]
+                                print(tid_st["error_message"])
                         else:
                             num_active += 1
                     time.sleep(0.5 * num_active)
 
-                for i in range(0, num_task_queue):
+                for i in range(0, len(ee_taskList)):
                     if task_stateList[i] != "COMPLETED":
-                        print(task_stateList[i])
                         print("[Error] TFRecords fails to be exported at [{0}] (TaskID = {1}) due to {2}".format(", ".join(ee_coordsList[i]), task_IDList[i], task_msgList[i]))
                     else:
                         print("[Success] TFRecords is exported at [{0}] (TaskID = {1})".format(", ".join(ee_coordsList[i]), task_IDList[i]))
@@ -601,5 +610,5 @@ if __name__ == "__main__":
     pretrained_weight = "height/check_pt_senet_100m_MTL_TF_gpu"
 
     # x_min=0, x_max=1.8, y_min=50, y_max=51.8
-    GBuildingMap(lon_min=-0.50, lat_min=51.00, lon_max=0.40, lat_max=51.90, year=2020, dx=0.09, dy=0.09, precision=3, batch_size=512, pretrained_model=pretrained_weight, target_resolution=100, num_task_queue=10,
-                    file_prefix="_", padding=0.02, patch_size_ratio=1, s2_cloud_prob_threshold=20, s2_cloud_prob_max=80, MTL=True, removed=True)
+    GBuildingMap(lon_min=-0.50, lat_min=51.00, lon_max=0.4, lat_max=51.90, year=2020, dx=0.18, dy=0.18, precision=3, batch_size=1024, pretrained_model=pretrained_weight, target_resolution=100, num_task_queue=5,
+                    file_prefix="_", padding=0.015, patch_size_ratio=1, s2_cloud_prob_threshold=20, s2_cloud_prob_max=80, MTL=True, removed=True)
