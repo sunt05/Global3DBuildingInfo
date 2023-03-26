@@ -24,7 +24,7 @@ SERVICE_ACCOUNT = "273902675329-compute@developer.gserviceaccount.com"
 #GS_OAUTH2_PRIVATE_KEY = "*******************************"
 #GS_OAUTH2_CLIENT_EMAIL = "*******************************"
 
-GS_ACCOUNT_JSON = "*******************************"
+GS_ACCOUNT_JSON = "./gcKey/robotic-door-289313-c2b5cf566528.json"
 
 # ---Google Cloud Storage bucket into which prediction datset will be written
 BUCKET = "lyy-shafts"
@@ -48,7 +48,7 @@ MTL_MODEL_local_PREFIX = "./DL_run"
 FEATURES = ["VV", "VH", "B4", "B3", "B2", "B8", "elevation"]
 
 
-def export_satData_GEE(lon_min: Union[int, float], lat_min: Union[int, float], lon_max: Union[int, float], lat_max: Union[int, float], year: int, target_resolution: int, dst_dir: str, precision=2, destination="CloudStorage", file_prefix=None, padding=0.02, patch_size_ratio=1, s2_cloud_prob_threshold=20, s2_cloud_prob_max=80):
+def export_satData_GEE(DEM_dta: ee.Image, S1_dataset: ee.ImageCollection, S2_dataset: List[ee.ImageCollection], S2_cloudProb_dataset: ee.ImageCollection, lon_min: Union[int, float], lat_min: Union[int, float], lon_max: Union[int, float], lat_max: Union[int, float], year: int, target_resolution: int, dst_dir: str, precision=2, destination="CloudStorage", file_prefix=None, padding=0.02, patch_size_ratio=1, s2_cloud_prob_threshold=20, s2_cloud_prob_max=80):
     """Export satellite images and data to Google Cloud Storage (GCS).
 
     Parameters
@@ -100,23 +100,30 @@ def export_satData_GEE(lon_min: Union[int, float], lat_min: Union[int, float], l
 
     # ------set the sample point
     spc = degree_ref[target_resolution]
+    '''
     xloc = np.arange(lon_min + spc * 0.5, lon_max, spc)
     yloc = np.arange(lat_max - spc * 0.5, lat_min, -spc)
     x, y = np.meshgrid(xloc, yloc)
     xy_coords = np.concatenate([x.flatten().reshape(-1, 1), y.flatten().reshape(-1, 1)], axis=1)
     target_pt = ee.FeatureCollection([ee.Geometry.Point(cr[0], cr[1]) for cr in xy_coords])
+    '''
+    xloc = ee.List.sequence(lon_min + spc * 0.5, lon_max, spc)
+    yloc = ee.List.sequence(lat_max - spc * 0.5, lat_min, -spc)
+    xy_coords = yloc.map(lambda y: xloc.map(lambda x: ee.Feature(ee.Geometry.Point([x, y])))).flatten()
+    target_pt = ee.FeatureCollection(xy_coords)
 
     # ------set the name of the exported TFRecords file
     if file_prefix is not None:
-        records_name = file_prefix + "_" + file_suffix + "_" + "H{0}".format(len(yloc)) + "W{0}".format(len(xloc))
+        records_name = file_prefix + "_" + file_suffix + "_" + "H{0}".format(100) + "W{0}".format(100)
     else:
-        records_name = "_" + file_suffix + "_" + "H{0}".format(len(yloc)) + "W{0}".format(len(xloc))
+        records_name = "_" + file_suffix + "_" + "H{0}".format(100) + "W{0}".format(100)
 
     # ------filter the NASADEM data
-    DEM_dta = ee.Image("NASA/NASADEM_HGT/001").select(["elevation"]).float()
+    # DEM_dta = ee.Image("NASA/NASADEM_HGT/001").select(["elevation"]).float()
     DEM_dta = DEM_dta.clip(target_bd)
     
     # ------filter the Sentinel-1 data
+    '''
     s1_ds = ee.ImageCollection("COPERNICUS/S1_GRD_FLOAT")
     s1_ds = s1_ds.filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VV'))
     s1_ds = s1_ds.filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VH'))
@@ -130,18 +137,52 @@ def export_satData_GEE(lon_min: Union[int, float], lat_min: Union[int, float], l
     else:
         s1_time_start = datetime.datetime(year=s1_year, month=6, day=1).strftime("%Y-%m-%d")
         s1_time_end = datetime.datetime(year=s1_year, month=9, day=1).strftime("%Y-%m-%d")
-    s1_ds = s1_ds.filter(ee.Filter.date(s1_time_start, s1_time_end))
-    s1_ds = s1_ds.filterBounds(target_bd)
+    S1_dataset = S1_dataset.filter(ee.Filter.date(s1_time_start, s1_time_end))
+    '''
+    S1_dataset = S1_dataset.filterBounds(target_bd)
     # ------note that if we use difference aggregation ops, exported bands would have different suffix with "_p50"
-    # s1_img = s1_ds.reduce(ee.Reducer.percentile([50]))
-    # s1_img = s1_img.clip(target_bd)
-    s1_img = s1_ds.mean().clip(target_bd)
-
-    # ------transform VV/VH bands of Sentinel-1 images to corresponding backscattering coefficients for the compatibility with SHAFTS
-    # s1_img = get_backscatterCoef_EE(s1_img)
+    s1_img = S1_dataset.mean().clip(target_bd)
 
     # ------filter the Sentinel-2 cloud-free data
-    s2_cld_threshold_base = 20
+    s2_cloudless_col =  S2_cloudProb_dataset.filterBounds(target_bd)
+
+    s2_cld_prob_step = 5
+    cld_prb_set = np.arange(s2_cloud_prob_threshold, s2_cloud_prob_max + s2_cld_prob_step, s2_cld_prob_step)
+    num_cld_prb = len(cld_prb_set)
+    
+    s2_img_found_flag = False
+    s2_img_cloudFree = None
+    for s2_ds_tmp in S2_dataset:
+        if not s2_img_found_flag:
+            s2_sr_col = s2_ds_tmp.filterBounds(target_bd)
+            s2_combined_col = ee.ImageCollection(ee.Join.saveFirst('s2cloudless').apply(**{
+                    'primary': s2_sr_col,
+                    'secondary': s2_cloudless_col,
+                    'condition': ee.Filter.equals(**{
+                        'leftField': 'system:index',
+                        'rightField': 'system:index'
+                    })
+            }))
+            s2_combined_col = s2_combined_col.map(lambda x: x.clip(target_bd))
+
+            for cld_prb_id in range(0, num_cld_prb):
+                if not s2_img_found_flag:
+                    cld_prb_v = int(cld_prb_set[cld_prb_id])
+                    s2_combined_col_tmp = s2_combined_col.map(lambda x: add_cloud_shadow_mask_infer(x, cld_prb_v)).map(computeQualityScore_infer)
+                    s2_cloudless_col_BEST = s2_combined_col_tmp.filter(ee.Filter.lt('CLOUDY_PERCENTAGE', cloudFreeKeepThresh))
+
+                    if s2_cloudless_col_BEST.size().gt(0):
+                        s2_img_found_flag = True
+                        s2_cloudless_col_BEST = s2_cloudless_col_BEST.sort("CLOUDY_PERCENTAGE", False)
+                        s2_filtered = s2_combined_col_tmp.qualityMosaic('cloudShadowScore')
+                        newC = ee.ImageCollection.fromImages([s2_filtered, s2_cloudless_col_BEST.mosaic()])
+                        s2_img_cloudFree = ee.Image(newC.mosaic()).clip(target_bd)
+                else:
+                    break
+        else:
+            break
+
+    '''
     s2_cld_prob_step = 5
     cld_prb_set = np.arange(s2_cloud_prob_threshold, s2_cloud_prob_max + s2_cld_prob_step, s2_cld_prob_step)
     num_cld_prb = len(cld_prb_set)
@@ -201,10 +242,9 @@ def export_satData_GEE(lon_min: Union[int, float], lat_min: Union[int, float], l
                     break
         else:
             break
+    '''
     
     s2_img_cloudFree = s2_img_cloudFree.select(["B4", "B3", "B2", "B8"])
-    # ------rescale R/G/B/NIR bands of Sentinel-2 to [0, 255] for the compatibility with SHAFTS
-    #s2_img_cloudFree = get_normalizedImage_EE(s2_img_cloudFree)
 
     kernelSize = int(target_resolution / 10.0)
     overlapSize = overlapSize_ref[target_resolution]
@@ -301,15 +341,6 @@ def export_satData_GEE(lon_min: Union[int, float], lat_min: Union[int, float], l
         raise NotImplementedError("Unknown destination: {0}. Supported destination: ['Drive', 'CloudStorage']".format(destination))
     
     print("[Submit] TFRecords is to be exported at [{0}, {1}, {2}, {3}]".format(lon_min, lon_max, lat_min, lat_max))
-    '''
-    while records_task.active():
-        time.sleep(2)
-
-    if records_task.status()["state"] != "COMPLETED":
-        print("[Error] TFRecords fails to be exported at [{0}, {1}, {2}, {3}]".format(lon_min, lon_max, lat_min, lat_max))
-    else:
-        print("[Success] TFRecords is exported at [{0}, {1}, {2}, {3}]".format(lon_min, lon_max, lat_min, lat_max))
-    '''
     return records_task
     
     
@@ -380,9 +411,7 @@ def createInferDataset(recordPathList: List[str], target_resolution: int, batch_
     imgDataset = tf.data.TFRecordDataset(recordPathList, compression_type="GZIP")
     imgDataset = imgDataset.map(lambda x: parseSatTFRecord(x, target_resolution), num_parallel_calls=8)
 
-    imgDataset = imgDataset.map(toTupleImage).batch(batch_size)
-    dta = list(imgDataset.as_numpy_iterator())
-    print(dta[0][0].shape)
+    imgDataset = imgDataset.map(toTupleImage, num_parallel_calls=8).batch(batch_size)
     '''
     dta = list(imgDataset.as_numpy_iterator())
     print(dta[0][0][0, :, :, 0])
@@ -395,11 +424,15 @@ def createInferDataset(recordPathList: List[str], target_resolution: int, batch_
     return imgDataset
     
 
-def GBuildingMap(lon_min: Union[int, float], lat_min: Union[int, float], lon_max: Union[int, float], lat_max: Union[int, float], year: int, pretrained_model: Union[Dict[str, str], str], target_resolution: int, dx=0.09, dy=0.09, precision=2, batch_size=16, file_prefix=None, padding=0.02, patch_size_ratio=1, s2_cloud_prob_threshold=20, s2_cloud_prob_max=80, MTL=True, removed=True, num_parallel=1, num_task_queue=10, num_cpu=2):
+def GBuildingMap(lon_min: Union[int, float], lat_min: Union[int, float], lon_max: Union[int, float], lat_max: Union[int, float], year: int, pretrained_model: Union[Dict[str, str], str], target_resolution: int, dx=0.09, dy=0.09, precision=2, batch_size=16, file_prefix=None, padding=0.02, patch_size_ratio=1, s2_cloud_prob_threshold=20, s2_cloud_prob_max=80, MTL=True, removed=True, num_task_queue=10, num_queue_min=4):
     BH_min = 2.0
     BH_max = 1000.0
     BF_min = 0.0
     BF_max = 1.0
+
+    BASE_INTERVAL = 1.0
+    MIN_INTERVAL = 1.5
+    GAMMA = 0.9
     
     # ------model configuration
     if MTL:
@@ -427,6 +460,48 @@ def GBuildingMap(lon_min: Union[int, float], lat_min: Union[int, float], lon_max
 
     ee.Initialize(ee.ServiceAccountCredentials(SERVICE_ACCOUNT, GS_ACCOUNT_JSON))
 
+    # ------load Sentinel-1 and Sentinel-2 dataset
+    DEM_dta = ee.Image("NASA/NASADEM_HGT/001").select(["elevation"]).float()
+    # ------load Sentinel-1 dataset
+    s1_ds = ee.ImageCollection("COPERNICUS/S1_GRD_FLOAT")
+    s1_ds = s1_ds.filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VV'))
+    s1_ds = s1_ds.filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VH'))
+    s1_ds = s1_ds.filter(ee.Filter.eq('instrumentMode', 'IW'))
+    s1_ds = s1_ds.select(["VV", "VH"])
+    s1_year = min(2022, max(year, 2015))    # Sentinel-1 availability: from 2014-10 to 2022-12
+    # ---------for northern hemisphere
+    s1_time_start_N = datetime.datetime(year=s1_year, month=12, day=1).strftime("%Y-%m-%d")
+    s1_time_end_N = datetime.datetime(year=s1_year+1, month=3, day=1).strftime("%Y-%m-%d")
+    s1_ds_N = s1_ds.filter(ee.Filter.date(s1_time_start_N, s1_time_end_N))
+    # ---------for southern hemisphere
+    s1_time_start_S = datetime.datetime(year=s1_year, month=6, day=1).strftime("%Y-%m-%d")
+    s1_time_end_S = datetime.datetime(year=s1_year, month=9, day=1).strftime("%Y-%m-%d")
+    s1_ds_S = s1_ds.filter(ee.Filter.date(s1_time_start_S, s1_time_end_S))
+
+    # ------load Sentinel-2 dataset
+    s2_cld_threshold_base = 20
+    s2_ds = ee.ImageCollection("COPERNICUS/S2_SR").filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', s2_cld_threshold_base))
+    s2_year = min(2022, max(year, 2018))    # Sentinel-2 availability: from 2017-03 to 2022-12
+    # ---------for northern hemisphere, we prefer: autumn > spring > summer
+    # ---------for southern hemisphere, we prefer: spring > autumn > summer
+    s2_time_start_aut = datetime.datetime(year=s2_year, month=9, day=1).strftime("%Y-%m-%d")
+    s2_time_end_aut = datetime.datetime(year=s2_year, month=12, day=1).strftime("%Y-%m-%d")
+    s2_ds_aut = s2_ds.filter(ee.Filter.date(s2_time_start_aut, s2_time_end_aut))
+
+    s2_time_start_spr = datetime.datetime(year=s2_year, month=3, day=1).strftime("%Y-%m-%d")
+    s2_time_end_spr = datetime.datetime(year=s2_year, month=6, day=1).strftime("%Y-%m-%d")
+    s2_ds_spr = s2_ds.filter(ee.Filter.date(s2_time_start_spr, s2_time_end_spr))
+    '''
+    s2_time_start_sum = datetime.datetime(year=s2_year, month=6, day=1).strftime("%Y-%m-%d")
+    s2_time_end_sum = datetime.datetime(year=s2_year, month=9, day=1).strftime("%Y-%m-%d")
+    s2_ds_sum = s2_ds.filter(ee.Filter.date(s2_time_start_sum, s2_time_end_sum))
+
+    s2_time_start_win = datetime.datetime(year=s2_year, month=12, day=1).strftime("%Y-%m-%d")
+    s2_time_end_win = datetime.datetime(year=s2_year+1, month=3, day=1).strftime("%Y-%m-%d")
+    s2_ds_win = s2_ds.filter(ee.Filter.date(s2_time_start_win, s2_time_end_win))    
+    '''
+    s2_cloudProb_ds = ee.ImageCollection("COPERNICUS/S2_CLOUD_PROBABILITY")
+
     # ------divide ROI into smaller patches
     num_lon = int(round((lon_max - lon_min) / dx, precision))
     if num_lon > 0:
@@ -444,7 +519,7 @@ def GBuildingMap(lon_min: Union[int, float], lat_min: Union[int, float], lon_max
 
     ee_taskList = []
     ee_coordsList = []
-    
+    # ee_suffixList = []
     for xId in range(0, xCell_num):
         for yId in range(0, yCell_num):
             lon_min_tmp = lon_min_sub[xId]
@@ -468,9 +543,16 @@ def GBuildingMap(lon_min: Union[int, float], lat_min: Union[int, float], lon_max
             else:
                 file_suffix = "_".join([str(lon_min_tmp), str(lon_max_tmp), str(lat_min_tmp), str(lat_max_tmp)])
             
-            task_tmp = export_satData_GEE(lon_min=lon_min_tmp, lat_min=lat_min_tmp, lat_max=lat_max_tmp, lon_max=lon_max_tmp, year=year, target_resolution=target_resolution,
-                                            dst_dir=DATA_FOLDER, precision=precision, destination="CloudStorage", file_prefix=file_prefix, padding=padding, patch_size_ratio=patch_size_ratio,
-                                            s2_cloud_prob_threshold=s2_cloud_prob_threshold, s2_cloud_prob_max=s2_cloud_prob_max)
+            if 0.5 * (lat_max_tmp + lat_min_tmp) > 0:
+                task_tmp = export_satData_GEE(DEM_dta, s1_ds_N, [s2_ds_aut, s2_ds_spr], s2_cloudProb_ds, 
+                                              lon_min=lon_min_tmp, lat_min=lat_min_tmp, lat_max=lat_max_tmp, lon_max=lon_max_tmp, year=year, target_resolution=target_resolution,
+                                              dst_dir=DATA_FOLDER, precision=precision, destination="CloudStorage", file_prefix=file_prefix, padding=padding, patch_size_ratio=patch_size_ratio,
+                                              s2_cloud_prob_threshold=s2_cloud_prob_threshold, s2_cloud_prob_max=s2_cloud_prob_max)
+            else:
+                task_tmp = export_satData_GEE(DEM_dta, s1_ds_S, [s2_ds_spr, s2_ds_aut], s2_cloudProb_ds, 
+                                              lon_min=lon_min_tmp, lat_min=lat_min_tmp, lat_max=lat_max_tmp, lon_max=lon_max_tmp, year=year, target_resolution=target_resolution,
+                                              dst_dir=DATA_FOLDER, precision=precision, destination="CloudStorage", file_prefix=file_prefix, padding=padding, patch_size_ratio=patch_size_ratio,
+                                              s2_cloud_prob_threshold=s2_cloud_prob_threshold, s2_cloud_prob_max=s2_cloud_prob_max)
             
             ee_taskList.append(task_tmp)
             ee_coordsList.append([lon_min_str, lon_max_str, lat_min_str, lat_max_str])
@@ -481,34 +563,53 @@ def GBuildingMap(lon_min: Union[int, float], lat_min: Union[int, float], lon_max
                 final_flag = False
 
             if len(ee_taskList) >= num_task_queue or final_flag:
-                task_IDList = [task.status()["name"].split("/")[-1] for task in ee_taskList]
-                task_stateList = [task.status()["state"] for task in ee_taskList]
-                task_msgList = ["" for task in ee_taskList]
-                task_runningID = [i for i in range(0, len(task_stateList)) if task_stateList[i] in ["UNSUBMITTED", "READY", "RUNNING"]]
-                while len(task_runningID) > 0:
+                task_infoList = [task.status() for task in ee_taskList]
+                task_IDList = [tinfo["name"].split("/")[-1] for tinfo in task_infoList]
+                task_stateList = [tinfo["state"] for tinfo in task_infoList]
+                # task_msgList = ["" for task in task_infoList]
+                task_runningID = [i for i in range(0, len(task_stateList)) if task_stateList[i] in ["UNSUBMITTED", "READY", "RUNNING", "CANCEL_REQUESTED"]]
+                num_iter = 0
+                while (len(task_runningID) > num_queue_min and not final_flag) or (len(task_runningID) > 0 and final_flag):
                     num_active = 0
+                    task_finishedID = []
                     # ----only check the status of tasks which were previously active
-                    for tid in task_runningID:
-                        tid_st = ee_taskList[tid].status()
+                    print(task_runningID)
+                    for loc in range(0, len(task_runningID)):
+                        tid = task_runningID[loc]
+                        tid_st = ee_taskList[loc].status()
                         # ------ref to: https://developers.google.com/earth-engine/guides/processing_environments
-                        if tid_st["state"] not in ["UNSUBMITTED", "READY", "RUNNING"]:
-                            task_runningID.remove(tid)
-                            task_stateList[tid] = tid_st["state"]
+                        if tid_st["state"] not in ["UNSUBMITTED", "READY", "RUNNING", "CANCEL_REQUESTED"]:
+                            task_finishedID.append(loc)
+                            # task_stateList[tid] = tid_st["state"]
                             if tid_st["state"] != "COMPLETED":
-                                task_msgList[tid] = tid_st["error_message"]
-                                print(tid_st["error_message"])
+                                # task_msgList[loc] = tid_st["error_message"]
+                                print("*****[Error] TFRecords fails to be exported at [{0}] (TaskID = {1}) due to {2}*****".format(", ".join(ee_coordsList[loc]), task_IDList[tid], tid_st["error_message"]))
+                            else:
+                                print("*****[Success] TFRecords is exported at [{0}] (TaskID = {1})*****".format(", ".join(ee_coordsList[loc]), task_IDList[tid]))
                         else:
+                            # print(tid_st["state"])
                             num_active += 1
-                    time.sleep(0.5 * num_active)
-
+                    
+                    print(task_finishedID)
+                    for loc in sorted(task_finishedID, reverse=True):
+                        del task_runningID[loc]
+                        del ee_taskList[loc]
+                        del ee_coordsList[loc]
+                    
+                    if num_active <= 2:
+                        t_sleep = MIN_INTERVAL
+                    else:
+                        t_sleep = max(BASE_INTERVAL * (GAMMA**num_iter) * num_active, MIN_INTERVAL)
+                    print("[Iter. {0}] {1} tasks are still running. Sleep {2} s".format(num_iter, num_active, t_sleep))
+                    num_iter += 1
+                    time.sleep(t_sleep)
+                '''
                 for i in range(0, len(ee_taskList)):
                     if task_stateList[i] != "COMPLETED":
                         print("[Error] TFRecords fails to be exported at [{0}] (TaskID = {1}) due to {2}".format(", ".join(ee_coordsList[i]), task_IDList[i], task_msgList[i]))
                     else:
                         print("[Success] TFRecords is exported at [{0}] (TaskID = {1})".format(", ".join(ee_coordsList[i]), task_IDList[i]))
-
-                ee_taskList.clear()
-                ee_coordsList.clear()
+                '''
 
     for xId in range(0, xCell_num):
         for yId in range(0, yCell_num):
@@ -610,5 +711,5 @@ if __name__ == "__main__":
     pretrained_weight = "height/check_pt_senet_100m_MTL_TF_gpu"
 
     # x_min=0, x_max=1.8, y_min=50, y_max=51.8
-    GBuildingMap(lon_min=-0.50, lat_min=51.00, lon_max=0.4, lat_max=51.90, year=2020, dx=0.18, dy=0.18, precision=3, batch_size=1024, pretrained_model=pretrained_weight, target_resolution=100, num_task_queue=5,
-                    file_prefix="_", padding=0.015, patch_size_ratio=1, s2_cloud_prob_threshold=20, s2_cloud_prob_max=80, MTL=True, removed=True)
+    GBuildingMap(lon_min=-0.50, lat_min=51.00, lon_max=0.4, lat_max=51.90, year=2020, dx=0.09, dy=0.09, precision=3, batch_size=512, pretrained_model=pretrained_weight, target_resolution=100, num_task_queue=30, num_queue_min=2,
+                    file_prefix="_", padding=0.01, patch_size_ratio=1, s2_cloud_prob_threshold=20, s2_cloud_prob_max=80, MTL=True, removed=True)
