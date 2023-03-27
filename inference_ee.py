@@ -15,40 +15,11 @@ from utils import *
 from DL_model import *
 
 
-REGION = "us-central1"
-
-# ---Google Cloud Service settings
-PROJECT_ID = "robotic-door-289313"
-SERVICE_ACCOUNT = "273902675329-compute@developer.gserviceaccount.com"
-# ------following keys can be generated at: https://console.cloud.google.com/iam-admin/serviceaccounts
-#GS_OAUTH2_PRIVATE_KEY = "*******************************"
-#GS_OAUTH2_CLIENT_EMAIL = "*******************************"
-
-GS_ACCOUNT_JSON = "./gcKey/robotic-door-289313-c2b5cf566528.json"
-
-# ---Google Cloud Storage bucket into which prediction datset will be written
-BUCKET = "lyy-shafts"
-
-DATA_FOLDER = "dataset_tmp"
-OUTPUT_FOLDER = "results"
-OUTPUT_local_FOLDER = "./results"
-BH_OUTPUT_GCS_PREFIX = "gs://" + BUCKET + "/" + OUTPUT_FOLDER + "/" + "height"
-BF_OUTPUT_GCS_PREFIX = "gs://" + BUCKET + "/" + OUTPUT_FOLDER + "/" + "footprint"
-
-#STL_MODEL_FOLDER = "STL"
-#STL_MODEL_GCS_PREFIX = "gs://" + BUCKET + "/" + STL_MODEL_FOLDER
-STL_MODEL_local_PREFIX = "./DL_run"
-
-#MTL_MODEL_FOLDER = "MTL"
-#MTL_MODEL_GCS_PREFIX = "gs://" + BUCKET + "/" + MTL_MODEL_FOLDER
-MTL_MODEL_local_PREFIX = "./DL_run"
-
-
 # FEATURES = ["VV_p50", "VH_p50", "B4", "B3", "B2", "B8", "elevation"]
 FEATURES = ["VV", "VH", "B4", "B3", "B2", "B8", "elevation"]
 
 
-def export_satData_GEE(DEM_dta: ee.Image, S1_dataset: ee.ImageCollection, S2_dataset: List[ee.ImageCollection], S2_cloudProb_dataset: ee.ImageCollection, lon_min: Union[int, float], lat_min: Union[int, float], lon_max: Union[int, float], lat_max: Union[int, float], year: int, target_resolution: int, dst_dir: str, precision=2, destination="CloudStorage", file_prefix=None, padding=0.02, patch_size_ratio=1, s2_cloud_prob_threshold=20, s2_cloud_prob_max=80):
+def export_satData_GEE(DEM_dta: ee.Image, S1_dataset: ee.ImageCollection, S2_dataset: List[ee.ImageCollection], S2_cloudProb_dataset: ee.ImageCollection, lon_min: Union[int, float], lat_min: Union[int, float], lon_max: Union[int, float], lat_max: Union[int, float], year: int, target_resolution: int, GCS_config: Dict[str, str], dst_dir: str, precision=2, destination="CloudStorage", file_prefix=None, padding=0.02, patch_size_ratio=1, s2_cloud_prob_threshold=20, s2_cloud_prob_max=80):
     """Export satellite images and data to Google Cloud Storage (GCS).
 
     Parameters
@@ -73,8 +44,8 @@ def export_satData_GEE(DEM_dta: ee.Image, S1_dataset: ee.ImageCollection, S2_dat
         The default is `0.04`.
 
     """
-    # S2_SCALE = 0.0001
-    S2_SCALE = 1.0
+    BUCKET = GCS_config["BUCKET"]
+    DATA_FOLDER = GCS_config["DATA_FOLDER"]
 
     if any([not isinstance(lon_min, int), not isinstance(lon_max, int), not isinstance(lat_min, int), not isinstance(lat_max, int)]):
         lon_min_str = str(round(lon_min, precision))
@@ -424,7 +395,79 @@ def createInferDataset(recordPathList: List[str], target_resolution: int, batch_
     return imgDataset
     
 
-def GBuildingMap(lon_min: Union[int, float], lat_min: Union[int, float], lon_max: Union[int, float], lat_max: Union[int, float], year: int, pretrained_model: Union[Dict[str, str], str], target_resolution: int, dx=0.09, dy=0.09, precision=2, batch_size=16, file_prefix=None, padding=0.02, patch_size_ratio=1, s2_cloud_prob_threshold=20, s2_cloud_prob_max=80, MTL=True, removed=True, num_task_queue=10, num_queue_min=4):
+def GBuildingMap(lon_min: Union[int, float], lat_min: Union[int, float], lon_max: Union[int, float], lat_max: Union[int, float], year: int, pretrained_model: Union[Dict[str, str], str], GCS_config: Dict[str, str], target_resolution: int, dx=0.09, dy=0.09, precision=2, batch_size=16, padding=0.02, patch_size_ratio=1, s2_cloud_prob_threshold=20, s2_cloud_prob_max=80, MTL=True, removed=True, num_task_queue=10, num_queue_min=2, file_prefix=None, output_folder="."):
+    """Perform the 3D building information mapping using Google Cloud Service.
+
+    Parameters
+    ----------
+
+    lon_min : Union[int, float]
+        Minimum longitude of target mapping.
+    lat_min : Union[int, float]
+        Minimum latitude of target mapping.
+    lon_max : Union[int, float]
+        Maximum longitude of target mapping.
+    lat_max : Union[int, float]
+        Maximum latitude of target mapping.
+    year : int
+        Year of target mapping.
+    pretrained_model : Union[Dict[str, str], str]
+        Dictionary or string which specifies the path to pretrained models. An example for the dictionary is given as:
+        {"height": "check_pt_senet_100m_MTL_TF_gpu", "footprint": "check_pt_senet_100m_MTL_TF_gpu"}
+    GCS_config : Dict[str, str]
+        Dictionary which specifies the configuration information of Google Cloud Service (GCS) for 3D building information mapping. An example is given as:
+        GCS_config = {
+            "SERVICE_ACCOUNT": "e-mail name of the GCS account",
+            "GS_ACCOUNT_JSON": "path to the JSON key for the GCS service account",
+            "BUCKET": "name of the Google Cloud Storage bucket",
+            "DATA_FOLDER": "name of the folder under the Google Cloud Storage bucket prepared for storing intermediate datasets",
+        }
+    target_resolution : int
+        Target resolution (in degrees) of the output mapping.
+    dx : float
+        Longitude coverage (in degrees) of sub-regions used for inference.
+        The default is `0.09`.
+    dy : float
+        Latitude coverage (in degrees) of sub-regions used for inference.
+        The default is `0.09`.
+    precision : int
+        The numerical precision of geographical coordinate calculation when dividing sub-regions.
+        The default is `2`.
+    batch_size : int
+        Batch size for CNN' inference.
+        The default is `16`.
+    padding : float
+        Padding size outside the target region (in degrees) when exporting satellite images.
+        The default is `0.02`.
+    patch_size_ratio : int
+        The ratio between the patch size of Sentinel-1/2 and SRTM data.
+        The default is `1`.
+    s2_cloud_prob_threshold : int
+        The minimum threshold of Sentinel-2 cloud probability for filtering out cloudy pixels.
+        The default is `20`.
+    s2_cloud_prob_max : int
+        The maximum threshold of Sentinel-2 cloud probability for filtering out cloudy pixels.
+        The default is `80`.
+    MTL : bool
+        Whether to use the MTL model.
+        The default is `True`.
+    removed : bool
+        Whether to remove the temporary datasets exported from Google Earth Engine and stored in Google Cloud Storage.
+        The default is `True`.
+    num_task_queue : int
+        The number of concurrent Google Earth Engine's tasks for exporting datasets in the task queue.
+        The default is `10`.
+    num_queue_min : int
+        The minimum number of tasks in the task queue. When the number of tasks in the task queue is less than `num_queue_min`, new tasks will be added to the task queue.
+        The default is `2`.
+    file_prefix : str
+        The prefix of the temporary dataset name.
+        The default is `None`.
+    output_folder : str
+        The path to the folder which saves the building height and footprint files.
+        The default is `.`.
+
+    """
     BH_min = 2.0
     BH_max = 1000.0
     BF_min = 0.0
@@ -433,25 +476,26 @@ def GBuildingMap(lon_min: Union[int, float], lat_min: Union[int, float], lon_max
     BASE_INTERVAL = 1.0
     MIN_INTERVAL = 1.5
     GAMMA = 0.9
+
+    SERVICE_ACCOUNT = GCS_config["SERVICE_ACCOUNT"]
+    GS_ACCOUNT_JSON = GCS_config["GS_ACCOUNT_JSON"]
+
+    # ---Google Cloud Storage bucket into which prediction datset will be written
+    BUCKET = GCS_config["BUCKET"]
+    DATA_FOLDER = GCS_config["DATA_FOLDER"]
     
     # ------model configuration
     if MTL:
         # ------prepare the Tensorflow-based MTL models
-        # m_path = MTL_MODEL_GCS_PREFIX + "/" + pretrained_model
-        m_path = MTL_MODEL_local_PREFIX + "/" + pretrained_model
-        m = tf.keras.models.load_model(m_path)
-        print("Model loaded from: {0}".format(m_path))
+        m = tf.keras.models.load_model(pretrained_model)
+        print("Model loaded from: {0}".format(pretrained_model))
     else:
         # ------prepare the Tensorflow-based STL models
-        #m_footprint_path = STL_MODEL_GCS_PREFIX + "/footprint/" + pretrained_model["footprint"]
-        m_footprint_path = STL_MODEL_local_PREFIX + "/footprint/" + pretrained_model["footprint"]
-        m_footprint = tf.keras.models.load_model(m_footprint_path)
-        print("Model loaded from: {0}".format(m_footprint_path))
+        m_footprint = tf.keras.models.load_model(pretrained_model["footprint"])
+        print("Model loaded from: {0}".format(pretrained_model["footprint"]))
 
-        # m_height_path = STL_MODEL_local_PREFIX + "/height/" + pretrained_model["height"]
-        m_height_path = STL_MODEL_local_PREFIX + "/height/" + pretrained_model["height"]
-        m_height = tf.keras.models.load_model(m_height_path)
-        print("Model loaded from: {0}".format(m_height_path))
+        m_height = tf.keras.models.load_model(pretrained_model["height"])
+        print("Model loaded from: {0}".format(pretrained_model["height"]))
 
     # ------set a client for operations related to Google Cloud Storage
     # client_GCS = storage.Client(project=PROJECT_ID)
@@ -544,12 +588,12 @@ def GBuildingMap(lon_min: Union[int, float], lat_min: Union[int, float], lon_max
                 file_suffix = "_".join([str(lon_min_tmp), str(lon_max_tmp), str(lat_min_tmp), str(lat_max_tmp)])
             
             if 0.5 * (lat_max_tmp + lat_min_tmp) > 0:
-                task_tmp = export_satData_GEE(DEM_dta, s1_ds_N, [s2_ds_aut, s2_ds_spr], s2_cloudProb_ds, 
+                task_tmp = export_satData_GEE(DEM_dta, s1_ds_N, [s2_ds_aut, s2_ds_spr], s2_cloudProb_ds, GCS_config=GCS_config,
                                               lon_min=lon_min_tmp, lat_min=lat_min_tmp, lat_max=lat_max_tmp, lon_max=lon_max_tmp, year=year, target_resolution=target_resolution,
                                               dst_dir=DATA_FOLDER, precision=precision, destination="CloudStorage", file_prefix=file_prefix, padding=padding, patch_size_ratio=patch_size_ratio,
                                               s2_cloud_prob_threshold=s2_cloud_prob_threshold, s2_cloud_prob_max=s2_cloud_prob_max)
             else:
-                task_tmp = export_satData_GEE(DEM_dta, s1_ds_S, [s2_ds_spr, s2_ds_aut], s2_cloudProb_ds, 
+                task_tmp = export_satData_GEE(DEM_dta, s1_ds_S, [s2_ds_spr, s2_ds_aut], s2_cloudProb_ds, GCS_config=GCS_config,
                                               lon_min=lon_min_tmp, lat_min=lat_min_tmp, lat_max=lat_max_tmp, lon_max=lon_max_tmp, year=year, target_resolution=target_resolution,
                                               dst_dir=DATA_FOLDER, precision=precision, destination="CloudStorage", file_prefix=file_prefix, padding=padding, patch_size_ratio=patch_size_ratio,
                                               s2_cloud_prob_threshold=s2_cloud_prob_threshold, s2_cloud_prob_max=s2_cloud_prob_max)
@@ -658,14 +702,14 @@ def GBuildingMap(lon_min: Union[int, float], lat_min: Union[int, float], lon_max
                 output_geo_trans = rtransform.Affine(degree_ref[target_resolution], 0.0, lon_min_tmp, 0.0, -degree_ref[target_resolution], lat_max_tmp)
 
                 # footprint_name = BF_OUTPUT_GCS_PREFIX + "/" + "BF" + "_" + file_suffix + ".tif"
-                footprint_name = os.path.join(OUTPUT_local_FOLDER, "BF", "BF_" + file_suffix + ".tif")
+                footprint_name = os.path.join(output_folder, "BF_" + file_suffix + ".tif")
                 with rasterio.Env():
                     with rasterio.open(footprint_name, "w+", width=w, height=h, count=1, crs="EPSG:4326", transform=output_geo_trans, dtype="float32") as out:
                         out.write_band(1, footprint_dta)
                     print("*" * 10 + " Output BuildingFootprint File: {0} ".format(footprint_name) + "*" * 10)
                 
                 # height_name = BH_OUTPUT_GCS_PREFIX + "/" + "BH" + "_" + file_suffix + ".tif"
-                height_name = os.path.join(OUTPUT_local_FOLDER, "BH", "BH_" + file_suffix + ".tif")
+                height_name = os.path.join(output_folder, "BH_" + file_suffix + ".tif")
                 # with rasterio.Env(GS_OAUTH2_PRIVATE_KEY=GS_OAUTH2_PRIVATE_KEY, GS_OAUTH2_CLIENT_EMAIL=GS_OAUTH2_CLIENT_EMAIL):
                 with rasterio.Env():
                     with rasterio.open(height_name, "w+", width=w, height=h, count=1, crs="EPSG:4326", transform=output_geo_trans, dtype="float32") as out:
@@ -688,28 +732,33 @@ def GBuildingMap(lon_min: Union[int, float], lat_min: Union[int, float], lon_max
     else:
         file_suffix = "_".join([str(lon_min), str(lon_max), str(lat_min), str(lat_max)])
     
-    height_dir = os.path.join(OUTPUT_local_FOLDER, "BH")
-    height_target_file = os.path.join(height_dir, "BH_" + file_suffix + ".tif")
-    height_subfile = [os.path.join(height_dir, f) for f in os.listdir(height_dir) if f.endswith(".tif")]
+    height_target_file = os.path.join(output_folder, "BH_" + file_suffix + ".tif")
+    height_subfile = [os.path.join(output_folder, f) for f in os.listdir(output_folder) if f.endswith(".tif")]
     gdal.Warp(destNameOrDestDS=height_target_file, srcDSOrSrcDSTab=height_subfile)
     for f in height_subfile:
         os.remove(f)
 
-    footprint_dir = os.path.join(OUTPUT_local_FOLDER, "BF")
-    footprint_target_file = os.path.join(footprint_dir, "BF_" + file_suffix + ".tif")
-    footprint_subfile = [os.path.join(footprint_dir, f) for f in os.listdir(footprint_dir) if f.endswith(".tif")]
+    footprint_target_file = os.path.join(output_folder, "BF_" + file_suffix + ".tif")
+    footprint_subfile = [os.path.join(output_folder, f) for f in os.listdir(output_folder) if f.endswith(".tif")]
     gdal.Warp(destNameOrDestDS=footprint_target_file, srcDSOrSrcDSTab=footprint_subfile)
     for f in footprint_subfile:
         os.remove(f)
     
 
 if __name__ == "__main__":
-    # export_satData_GEE(lon_min=0, lat_min=51.2, lon_max=0.09, lat_max=51.29, year=2020, file_prefix="_", target_resolution=100, padding=0.01, s2_cloud_prob_threshold=20, s2_cloud_prob_max=80)
-    # createInferDataset(["testSample/__0.0_0.9_51.20_51.29_H100W100.tfrecord.gz"], target_resolution=100)
-    # pretrained_weight = {"height": "check_pt_senet_100m_TF_gpu", "footprint": "check_pt_senet_100m_TF_gpu"}
-    # pretrained_weight = {"height": "check_pt_senet_100m_MTL_TF_gpu", "footprint": "check_pt_senet_100m_MTL_TF_gpu"}
-    pretrained_weight = "height/check_pt_senet_100m_MTL_TF_gpu"
+    # pretrained_weight = {"height": "./DL_run/check_pt_senet_100m_TF_gpu", "footprint": "./DL_run/check_pt_senet_100m_TF_gpu"}
+    pretrained_weight = "./DL_run/height/check_pt_senet_100m_MTL_TF_gpu"
 
-    # x_min=0, x_max=1.8, y_min=50, y_max=51.8
-    GBuildingMap(lon_min=-0.50, lat_min=51.00, lon_max=0.4, lat_max=51.90, year=2020, dx=0.09, dy=0.09, precision=3, batch_size=512, pretrained_model=pretrained_weight, target_resolution=100, num_task_queue=30, num_queue_min=2,
-                    file_prefix="_", padding=0.01, patch_size_ratio=1, s2_cloud_prob_threshold=20, s2_cloud_prob_max=80, MTL=True, removed=True)
+    # ---Google Cloud Service configuration
+    GCS_config = {
+        "SERVICE_ACCOUNT": "273902675329-compute@developer.gserviceaccount.com",
+        "GS_ACCOUNT_JSON": "./gcKey/robotic-door-289313-c2b5cf566528.json",
+        "BUCKET": "lyy-shafts",
+        "DATA_FOLDER": "dataset_tmp",
+    }
+
+    GBuildingMap(lon_min=-0.50, lat_min=51.00, lon_max=0.4, lat_max=51.90, year=2020, dx=0.09, dy=0.09, precision=3, batch_size=512, 
+                    pretrained_model=pretrained_weight, GCS_config=GCS_config,
+                    target_resolution=100, num_task_queue=30, num_queue_min=2,
+                    file_prefix="_", padding=0.01, patch_size_ratio=1, s2_cloud_prob_threshold=20, s2_cloud_prob_max=80, MTL=True, 
+                    removed=True, output_folder="./results")
