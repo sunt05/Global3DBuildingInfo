@@ -18,10 +18,12 @@ The following steps are required for setting up a [Goolge Earth Engine enabled C
 
 3. Set up a bucket in the [Google Cloud Storage (GCS)](https://cloud.google.com/storage) prepared for the storage of some intermediate exported datasets from Google Earth Engine. Please note that **the names of the created bucket, its folder for storing intermediate datasets** are required by the execution of `GBuildingMap` function. An example of the structure of the GCS's bucket can be given as follows:
 
+```bash
     bucket-name/
     |-- dataset/
     |   |-- exported-dataset.tfrecord.gz
     |   |-- ...
+```
 
 4. Create a [Google Cloud Service's account](https://console.cloud.google.com/iam-admin/serviceaccounts/) for the project. If there is already an account, you can keep it without creating an additional one. Please note that **the e-mail name of the service account** is required by the execution of `GBuildingMap` function.
 
