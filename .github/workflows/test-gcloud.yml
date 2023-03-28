@@ -34,11 +34,6 @@ jobs:
         environment-file: env.yml
         auto-update-conda: true
         mamba-version: "*"
-    
-    - name: show conda info
-      run: |
-          conda info
-          conda list
 
     # ref to: https://github.com/google-github-actions/setup-gcloud#Authorization
     - name: 'pre-auth'
@@ -64,4 +59,4 @@ jobs:
     - name: 'Export GEE dataset'
       run: |
         conda init bash
-        python inference_GH.py --project_id ${{ vars.PROJECT_ID }} --bucket_name ${{ vars.BUCKET_NAME }} --data_folder ${{ vars.DATAFLODER_NAME }}
+        python inference_GH.py --service_account ${{ vars.SERVICE_NAME }} --bucket_name ${{ vars.BUCKET_NAME }} --data_folder ${{ vars.DATAFLODER_NAME }}
