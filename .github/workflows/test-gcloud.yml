@@ -4,11 +4,11 @@ on: push
 
 jobs:
   build-n-publish:
-    name: test conda setup
+    name: test gcloud setup
 
     strategy:
       matrix:
-        python-version: ["3.7"]
+        python-version: ["3.8"]
         # os: [macOS-latest, windows-latest, ubuntu-latest]
         os: [ubuntu-latest]
 
@@ -19,7 +19,29 @@ jobs:
         shell: bash -l {0}
 
     steps:
-    - name: 'auth'
+    - uses: actions/checkout@v2
+    - name: Set up conda
+      uses: conda-incubator/setup-miniconda@v2
+      with:
+        # miniconda-version: "latest"
+        # environment variables don’t persist between steps in a workflow, which breaks some things in Conda.
+        # Installing the environment’s packages into the base environment avoids this issue
+        # activate-environment: test
+        python-version: ${{ matrix.python-version }}
+        channel-priority: true
+        auto-activate-base: false
+        activate-environment: anaconda-client-env
+        environment-file: env.yml
+        auto-update-conda: true
+        mamba-version: "*"
+    
+    - name: show conda info
+      run: |
+          conda info
+          conda list
+
+    # ref to: https://github.com/google-github-actions/setup-gcloud#Authorization
+    - name: 'pre-auth'
       uses: 'google-github-actions/auth@v1'
       with:
         credentials_json: '${{ secrets.GCP_CREDENTIALS }}'
@@ -32,3 +54,14 @@ jobs:
     - name: 'Use gcloud CLI'
       run: |
         gcloud info
+        gcloud iam service-accounts add-iam-policy-binding ${{ vars.SERVICE_NAME }} --role roles/storage.objectCreator --project ${{ vars.PROJECT_ID }} --member serviceAccount:${{ vars.SERVICE_NAME }}
+    
+    - name: 'auth'
+      uses: 'google-github-actions/auth@v1'
+      with:
+        credentials_json: '${{ secrets.GCP_USER_CREDENTIALS }}'
+
+    - name: 'Export GEE dataset'
+      run: |
+        conda init bash
+        python inference_GH.py --bucket_name ${{ vars.BUCKET_NAME }} --data_folder ${{ vars.DATAFLODER_NAME }}
