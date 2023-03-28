@@ -524,7 +524,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="CNN Model Training")
     # dataset
     #parser.add_argument("--service_account", type=str, help="the e-mail of Google Cloud Service account")
-    #parser.add_argument("--project_id", type=str, help="the ID of the Google Cloud Project")
+    parser.add_argument("--project_id", type=str, help="the ID of the Google Cloud Project")
     parser.add_argument("--bucket_name", type=str, help="the name of the Google Cloud Storage bucket")
     parser.add_argument("--data_folder", type=str, help="the name of the folder in the Google Cloud Storage bucket")
 
@@ -547,4 +547,4 @@ if __name__ == "__main__":
     GBuildingMap_dataset(lon_min=-0.50, lat_min=51.00, lon_max=0.4, lat_max=51.90, year=2020, dx=0.09, dy=0.09, precision=3,
                             GCS_config=GCS_config,
                             target_resolution=100, num_task_queue=30, num_queue_min=2,
-                            file_prefix="_", padding=0.01, patch_size_ratio=1, s2_cloud_prob_threshold=20, s2_cloud_prob_max=80)
+                            file_prefix=args.project_id, padding=0.01, patch_size_ratio=1, s2_cloud_prob_threshold=20, s2_cloud_prob_max=80)
