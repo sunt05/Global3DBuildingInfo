@@ -55,4 +55,8 @@ jobs:
     - name: 'Export GEE dataset'
       run: |
         conda init bash
-        python inference_GH.py --service_account ${{ vars.SERVICE_NAME }} --bucket_name ${{ vars.BUCKET_NAME }} --data_folder ${{ vars.DATAFLODER_NAME }}
+        python inference_GH.py \
+                               --service_account ${{ vars.SERVICE_NAME }} \
+                               --GS_json ${{ env.GOOGLE_APPLICATION_CREDENTIALS }} \
+                               --bucket_name ${{ vars.BUCKET_NAME }} \
+                               --data_folder ${{ vars.DATAFLODER_NAME }}

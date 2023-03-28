@@ -360,8 +360,8 @@ def GBuildingMap_dataset(lon_min: Union[int, float], lat_min: Union[int, float],
     MIN_INTERVAL = 1.5
     GAMMA = 0.9
 
-    # SERVICE_ACCOUNT = GCS_config["SERVICE_ACCOUNT"]
-    # GS_ACCOUNT_JSON = GCS_config["GS_ACCOUNT_JSON"]
+    SERVICE_ACCOUNT = GCS_config["SERVICE_ACCOUNT"]
+    GS_ACCOUNT_JSON = GCS_config["GS_ACCOUNT_JSON"]
 
     # ---Google Cloud Storage bucket into which prediction datset will be written
     # BUCKET = GCS_config["BUCKET"]
@@ -371,8 +371,8 @@ def GBuildingMap_dataset(lon_min: Union[int, float], lat_min: Union[int, float],
     # client_GCS = storage.Client(project=GCS_config["PROJECT_ID"])
     # client_GCS = storage.Client.from_service_account_json(GS_ACCOUNT_JSON)
 
-    # ee.Initialize(ee.ServiceAccountCredentials(SERVICE_ACCOUNT, GS_ACCOUNT_JSON))
-    ee.Initialize()
+    ee.Initialize(ee.ServiceAccountCredentials(SERVICE_ACCOUNT, GS_ACCOUNT_JSON))
+    # ee.Initialize()
 
     # ------load Sentinel-1 and Sentinel-2 dataset
     DEM_dta = ee.Image("NASA/NASADEM_HGT/001").select(["elevation"]).float()
@@ -524,7 +524,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="CNN Model Training")
     # dataset
     parser.add_argument("--service_account", type=str, help="the e-mail of Google Cloud Service account")
-    #parser.add_argument("--project_id", type=str, help="the ID of the Google Cloud Project")
+    parser.add_argument("--GS_json", type=str, help="json")
+    # parser.add_argument("--project_id", type=str, help="the ID of the Google Cloud Project")
     parser.add_argument("--bucket_name", type=str, help="the name of the Google Cloud Storage bucket")
     parser.add_argument("--data_folder", type=str, help="the name of the folder in the Google Cloud Storage bucket")
 
@@ -538,8 +539,8 @@ if __name__ == "__main__":
     }
     '''
     GCS_config = {
-        #"SERVICE_ACCOUNT": args.service_account,
-        # "PROJECT_ID": args.project_id,
+        "SERVICE_ACCOUNT": args.service_account,
+        "GS_ACCOUNT_JSON": args.GS_json,
         "BUCKET": args.bucket_name,
         "DATA_FOLDER": args.data_folder,
     }
