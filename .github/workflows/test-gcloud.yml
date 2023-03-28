@@ -48,6 +48,7 @@ jobs:
     
     - name: 'Use gcloud CLI'
       run: |
+        gcloud config list --format='text(core.project)'
         gcloud config set project ${{ vars.PROJECT_ID }}
         gcloud iam service-accounts add-iam-policy-binding ${{ vars.SERVICE_NAME }} --role roles/storage.objectCreator --project=${{ vars.PROJECT_ID }} --member=serviceAccount:${{ vars.SERVICE_NAME }}
     
