@@ -9,7 +9,11 @@ import tensorflow as tf
 import tensorflow_probability as tfp
 import rasterio
 import rasterio.transform as rtransform
+
+from googleapiclient import discovery
+from googleapiclient.errors import HttpError
 from google.cloud import storage
+from google.oauth2 import service_account
 
 from utils import *
 from DL_model import *
@@ -17,6 +21,27 @@ from DL_model import *
 
 # FEATURES = ["VV_p50", "VH_p50", "B4", "B3", "B2", "B8", "elevation"]
 FEATURES = ["VV", "VH", "B4", "B3", "B2", "B8", "elevation"]
+
+
+def GCS_setting(credentials_path: str, project_name="3DBuildingMapper", bucket_name="3DBuildingMapper", gee_data_folder="GEE_dataset_tmp"):
+    # ---create a Google Cloud Project
+    PROJECT_ID = "202303281215"
+    credentials = service_account.Credentials.from_service_account_file(credentials_path)
+    gcs_manager = discovery.build('cloudresourcemanager', 'v1', cache_discovery=False, credentials=credentials)
+    gcp_body = {"projectID": PROJECT_ID, "name": project_name}
+    request = gcs_manager.projects().create(body=gcp_body)
+    request.execute()
+    # ------enable the google earth engine API
+    ee_request = gcs_manager.services().enable(name=f'projects/{0}/services/{1}'.format(PROJECT_ID, "earthengine.googleapis.com"))
+    ee_request.execute()
+    
+    # ---set up the Google Cloud Storage
+    client = storage.Client.from_service_account_json(credentials_path)
+    # ------create a bucket
+    bucket = client.create_bucket(bucket_name)
+    # ------create a folder under the current bucket
+    blob = storage.Blob("{0}/".format(gee_data_folder), bucket)
+    blob.upload_from_string("")
 
 
 def export_satData_GEE(DEM_dta: ee.Image, S1_dataset: ee.ImageCollection, S2_dataset: List[ee.ImageCollection], S2_cloudProb_dataset: ee.ImageCollection, lon_min: Union[int, float], lat_min: Union[int, float], lon_max: Union[int, float], lat_max: Union[int, float], year: int, target_resolution: int, GCS_config: Dict[str, str], dst_dir: str, precision=2, destination="CloudStorage", file_prefix=None, padding=0.02, patch_size_ratio=1, s2_cloud_prob_threshold=20, s2_cloud_prob_max=80):
