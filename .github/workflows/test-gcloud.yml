@@ -44,7 +44,7 @@ jobs:
     
     - name: 'Use gcloud CLI'
       run: |
-        gcloud iam service-accounts add-iam-policy-binding ${{ vars.SERVICE_NAME }} --role='roles/storage.objectCreator' --project=${{ vars.PROJECT_ID }} --member=serviceAccount:${{ vars.USER_SERVICE_NAME }}
+        gcloud projects add-iam-policy-binding ${{ vars.PROJECT_ID }} --role='roles/storage.objectCreator' --project=${{ vars.PROJECT_ID }} --member=serviceAccount:${{ vars.USER_SERVICE_NAME }}
     
     - name: 'auth'
       uses: 'google-github-actions/auth@v1'
